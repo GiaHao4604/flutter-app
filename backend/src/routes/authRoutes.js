@@ -5,7 +5,7 @@
 // const { register, login, getMe, uploadAvatar } = require('../controllers/authController');
 
 // // 2. Import các middleware (💡 Đã sửa đồng bộ tên thư mục 'middlewares' có chữ s)
-// const authMiddleware = require('../middlewares/authMiddleware');
+// const { authMiddleware } = require('../middlewares/authMiddleware');
 // const uploadAvatarMiddleware = require('../middleware/uploadAvatar'); 
 
 // // Route Đăng ký tài khoản
@@ -34,22 +34,25 @@ const express = require('express');
 const router = express.Router();
 
 // Import các hàm từ controller
-const { register, login, getMe, uploadAvatar } = require('../controllers/authController');
+const { sendRegisterOtp, register, login, getMe, uploadAvatar, forgotPassword, resetPassword } = require('../controllers/authController');
 const {
   updateMyProfile,
   updateMyPassword,
 } = require('../controllers/profileController');
 
 // Import các middleware (Đảm bảo đúng chính tả thư mục 'middlewares')
-const authMiddleware = require('../middlewares/authMiddleware');
+const { authMiddleware } = require('../middlewares/authMiddleware');
 const uploadAvatarMiddleware = require('../middleware/uploadAvatar'); 
 
 const avatarUploadHandler = typeof uploadAvatarMiddleware.single === 'function'
   ? uploadAvatarMiddleware.single('avatar')
   : uploadAvatarMiddleware;
 
+router.post('/register/send-otp', sendRegisterOtp);
 router.post('/register', register);
 router.post('/login', login);
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPassword);
 router.get('/me', authMiddleware, getMe);
 router.put('/me', authMiddleware, updateMyProfile);
 router.patch('/me/password', authMiddleware, updateMyPassword);

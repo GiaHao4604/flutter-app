@@ -26,7 +26,7 @@ class AuthApiService {
   static String? _activeBaseUrl;
   static List<String> _lastTriedBaseUrls = <String>[];
 
-  static String _resolveBaseUrl() {
+  static String _resolveBaseUrl() { 
     const configuredBaseUrl = String.fromEnvironment(
       'API_BASE_URL',
       defaultValue: '',
@@ -50,14 +50,24 @@ class AuthApiService {
     }
   }
 
+  Future<AuthApiResult> sendRegisterOtp({required String email}) {
+    return _post(path: '/register/send-otp', body: {'email': email});
+  }
+
   Future<AuthApiResult> register({
     required String name,
     required String email,
     required String password,
+    required String otpCode,
   }) {
     return _post(
       path: '/register',
-      body: {'name': name, 'email': email, 'password': password},
+      body: {
+        'name': name,
+        'email': email,
+        'password': password,
+        'otp_code': otpCode,
+      },
     );
   }
 
@@ -66,6 +76,25 @@ class AuthApiService {
     required String password,
   }) {
     return _post(path: '/login', body: {'email': email, 'password': password});
+  }
+
+  Future<AuthApiResult> forgotPassword({required String email}) {
+    return _post(path: '/forgot-password', body: {'email': email});
+  }
+
+  Future<AuthApiResult> resetPassword({
+    required String email,
+    required String otpCode,
+    required String newPassword,
+  }) {
+    return _post(
+      path: '/reset-password',
+      body: {
+        'email': email,
+        'otp_code': otpCode,
+        'new_password': newPassword,
+      },
+    );
   }
 
   Future<AuthApiResult> getMe({required String token}) async {
@@ -286,7 +315,7 @@ class AuthApiService {
               headers: const {'Content-Type': 'application/json'},
               body: jsonEncode(body),
             )
-            .timeout(const Duration(seconds: 10)),
+            .timeout(const Duration(seconds: 4)),
       );
 
       final decoded = _decodeJson(response.body);
@@ -405,11 +434,11 @@ class AuthApiService {
       add(_activeBaseUrl!);
     }
 
-    add(_baseUrl);
-
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       add(_androidEmulatorBaseUrl);
     }
+
+    add(_baseUrl);
 
     return result;
   }

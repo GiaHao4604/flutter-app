@@ -43,7 +43,10 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   }
 
   Future<void> _loadStats() async {
-    final loadedRecords = <Map<String, dynamic>>[];
+    // Server records (từ finance API) - nguồn tin cậy chính
+    final serverRecords = <Map<String, dynamic>>[];
+    // Local-only records (chưa sync lên server)
+    final localOnlyRecords = <Map<String, dynamic>>[];
 
     final token = await _sessionService.getToken();
     if (token != null && token.isNotEmpty) {
@@ -58,7 +61,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         if (transactions is List) {
           for (final item in transactions) {
             if (item is Map) {
-              loadedRecords.add(
+              serverRecords.add(
                 _normalizeRecord(Map<String, dynamic>.from(item)),
               );
             }
@@ -66,6 +69,12 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         }
       }
     }
+
+    // Lấy IDs đã có trên server để tránh cộng đôi local records
+    final serverIds = serverRecords
+        .map((r) => r['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet();
 
     final prefs = await SharedPreferences.getInstance();
     final key = await _storageService.currentCalendarKey();
@@ -77,17 +86,23 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         if (decoded is List) {
           for (final item in decoded) {
             if (item is Map) {
-              loadedRecords.add(
-                _normalizeRecord(Map<String, dynamic>.from(item)),
-              );
+              final record = _normalizeRecord(Map<String, dynamic>.from(item));
+              final id = record['id']?.toString() ?? '';
+              // Bỏ qua local record nếu đã có trên server (tránh cộng đôi)
+              if (id.isNotEmpty && serverIds.contains(id)) continue;
+              localOnlyRecords.add(record);
             }
           }
         }
       } catch (_) {}
     }
 
+    // Gộp: server records + local records chưa sync
+    final allRecords = [...serverRecords, ...localOnlyRecords];
+
+    // Dedup lần cuối theo key tổng hợp (phòng hờ)
     final dedup = <String, Map<String, dynamic>>{};
-    for (final record in loadedRecords) {
+    for (final record in allRecords) {
       final key = [
         record['id']?.toString() ?? '',
         record['dateKey']?.toString() ?? '',
@@ -112,6 +127,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       _isLoading = false;
     });
   }
+
 
   int _parseAmount(dynamic value) {
     if (value is int) return value;

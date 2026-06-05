@@ -1,6 +1,6 @@
 const express = require('express');
 const { body, param, query } = require('express-validator');
-const authMiddleware = require('../middlewares/authMiddleware');
+const { authMiddleware } = require('../middlewares/authMiddleware');
 const uploadCalendar = require('../middleware/uploadCalendar');
 const calendarController = require('../controllers/calendarController');
 

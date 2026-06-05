@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -425,11 +426,13 @@ Future<void> _loadMonthData() async {
   ImageProvider? _postImageProvider(Map<String, dynamic> post) {
     final path = _postImagePath(post);
     if (path == null) return null;
-    // If the path already looks like an absolute HTTP URL, use it.
+
+    // Fix: kiểm tra URL trước để tránh gọi File I/O không cần thiết
     if (path.startsWith('http://') || path.startsWith('https://')) {
       return NetworkImage(path);
     }
 
+    // Kiểm tra file local tồn tại
     try {
       final file = File(path);
       if (file.existsSync()) {
@@ -437,7 +440,7 @@ Future<void> _loadMonthData() async {
       }
     } catch (_) {}
 
-    // Only resolve known server asset paths to an absolute URL.
+    // Chỉ resolve path server khi chắc chắn đây là server asset path
     if (path.startsWith('/uploads/') || path.startsWith('uploads/')) {
       final resolved = CalendarApiService.resolveAssetUrl(path);
       if (resolved.isNotEmpty) return NetworkImage(resolved);
@@ -445,6 +448,7 @@ Future<void> _loadMonthData() async {
 
     return null;
   }
+
 
   /// Return a ResizeImage wrapped provider sized to [logicalWidth] logical pixels
   /// (the helper will multiply by devicePixelRatio internally). This reduces
@@ -477,57 +481,6 @@ Future<void> _loadMonthData() async {
 
   DateTime _selectedDayDate(int dayIndex) {
     return DateTime(_visibleMonth.year, _visibleMonth.month, dayIndex);
-  }
-
-  Future<void> _showDiagnostics() async {
-    final prefs = await SharedPreferences.getInstance();
-    final storageKey = await _storageService.currentCalendarKey();
-    final raw = prefs.getString(storageKey);
-    final posts = <Map<String, dynamic>>[];
-    if (raw != null && raw.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is List) {
-          for (final item in decoded) {
-            if (item is Map) posts.add(Map<String, dynamic>.from(item));
-          }
-        }
-      } catch (_) {}
-    }
-
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (c) {
-        return AlertDialog(
-          title: const Text('Calendar Diagnostics'),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 360,
-            child: posts.isEmpty
-                ? const Center(child: Text('No entries stored locally'))
-                : ListView.builder(
-                    itemCount: posts.length,
-                    itemBuilder: (ctx, i) {
-                      final pmap = posts[i];
-                      final id = pmap['id']?.toString() ?? pmap['localId']?.toString() ?? '';
-                      final dk = pmap['dateKey']?.toString() ?? pmap['date']?.toString() ?? '';
-                      final path = _postImagePath(pmap);
-                      final exists = path != null && File(path).existsSync();
-                      return ListTile(
-                        title: Text('$dk — $id'),
-                        subtitle: Text('path: ${path ?? '—'}\nexists: $exists'),
-                        isThreeLine: true,
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('Close')),
-          ],
-        );
-      },
-    );
   }
 
   void _openDayPreview(
@@ -862,14 +815,7 @@ Widget build(BuildContext context) {
       elevation: 0,
       centerTitle: true,
         title: Text('Lịch', style: GoogleFonts.manrope(fontSize: 18, fontWeight: FontWeight.w700)),
-        actions: [
-          IconButton(
-            tooltip: 'Diagnostics',
-            onPressed: _showDiagnostics,
-            icon: const Icon(Icons.bug_report, color: Colors.white),
-          ),
-        ],
-      automaticallyImplyLeading: true,
+        automaticallyImplyLeading: true,
     ),
     body: SafeArea(
       child: Padding(

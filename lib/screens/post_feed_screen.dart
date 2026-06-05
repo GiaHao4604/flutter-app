@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-
-import 'package:flutter_application_1/screens/chat_screen.dart';
+import 'package:flutter_application_1/screens/chat_detail_screen.dart';
 import 'package:flutter_application_1/services/auth_api_service.dart';
 import 'package:flutter_application_1/services/auth_session_service.dart';
 import 'package:flutter_application_1/services/post_api_service.dart';
@@ -17,7 +16,7 @@ class _PostFeedScreenState extends State<PostFeedScreen> {
   final AuthSessionService _sessionService = AuthSessionService();
   final AuthApiService _authApiService = AuthApiService();
   final PostApiService _postApiService = PostApiService();
-  final ScrollController _scrollController = ScrollController();
+  late PageController _pageController;
   final List<Map<String, dynamic>> _posts = <Map<String, dynamic>>[];
   final Map<String, String> _localReactions = <String, String>{};
 
@@ -28,27 +27,38 @@ class _PostFeedScreenState extends State<PostFeedScreen> {
   String? _error;
   static const int _pageSize = 8;
 
+  bool _showOnlyMine = false;
+  int _currentPostIndex = 0;
+
   String _currentUserName = 'Bạn';
   String? _currentUserAvatarUrl;
+  int? _currentUserId;
 
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(_handleScroll);
+    _pageController = PageController();
+    _pageController.addListener(_handlePageChange);
     _loadProfileAndPosts(refresh: true);
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _pageController.removeListener(_handlePageChange);
+    _pageController.dispose();
     super.dispose();
   }
 
-  void _handleScroll() {
-    if (!_scrollController.hasClients || _isLoadingMore || !_hasMore) return;
-    final position = _scrollController.position;
-    if (position.pixels >= position.maxScrollExtent - 360) {
-      _loadMore();
+  void _handlePageChange() {
+    final newIndex = _pageController.page?.round() ?? 0;
+    if (newIndex != _currentPostIndex) {
+      setState(() {
+        _currentPostIndex = newIndex;
+      });
+      // Load more posts when approaching the end
+      if (newIndex >= _posts.length - 2 && _hasMore && !_isLoadingMore) {
+        _loadMore();
+      }
     }
   }
 
@@ -68,6 +78,7 @@ class _PostFeedScreenState extends State<PostFeedScreen> {
       if (profile.success) {
         _currentUserName = profile.data?['name']?.toString().trim() ?? _currentUserName;
         _currentUserAvatarUrl = profile.data?['avatar_url']?.toString();
+        _currentUserId = int.tryParse(profile.data?['id']?.toString() ?? '') ?? _currentUserId;
       }
     } catch (_) {}
 
@@ -103,6 +114,7 @@ class _PostFeedScreenState extends State<PostFeedScreen> {
         token: token,
         page: _page,
         limit: _pageSize,
+        my: _showOnlyMine,
       );
 
       if (!mounted) return;
@@ -150,18 +162,31 @@ class _PostFeedScreenState extends State<PostFeedScreen> {
     return '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year}';
   }
 
-  Future<void> _openChat(Map<String, dynamic> post) async {
-    final user = post['user'] is Map ? Map<String, dynamic>.from(post['user'] as Map) : <String, dynamic>{};
-    final recipientName = (user['name']?.toString().trim().isNotEmpty ?? false)
-        ? user['name'].toString().trim()
+  Future<void> _openChat(Map<String, dynamic> post, {String? replyMessage}) async {
+    final author = post['author'] is Map ? Map<String, dynamic>.from(post['author'] as Map) : <String, dynamic>{};
+    final recipientId = int.tryParse(author['id']?.toString() ?? '') ?? 0;
+    final recipientName = (author['name']?.toString().trim().isNotEmpty ?? false)
+        ? author['name'].toString().trim()
         : 'Người dùng';
-    final recipientAvatarUrl = user['avatarUrl']?.toString();
-    final initialMessage = post['caption']?.toString().trim();
+    final recipientAvatarUrl = author['avatarUrl']?.toString();
+    final initialMessage = replyMessage ?? post['caption']?.toString().trim();
+
+    if (_currentUserId == null || _currentUserId == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Không xác định được người dùng hiện tại.')));
+      return;
+    }
+    if (recipientId == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Không xác định được người nhận.')));
+      return;
+    }
 
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ChatScreen(
+        builder: (_) => ChatDetailScreen(
+          currentUserId: _currentUserId!,
+          conversationId: null,
+          recipientId: recipientId,
           recipientName: recipientName,
           recipientAvatarUrl: recipientAvatarUrl,
           initialMessage: initialMessage != null && initialMessage.isNotEmpty ? initialMessage : null,
@@ -170,204 +195,195 @@ class _PostFeedScreenState extends State<PostFeedScreen> {
     );
   }
 
-  Future<String?> _showReactions() {
-    return showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: const Color(0xFF141414),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) {
-        const reactions = <Map<String, String>>[
-          {'emoji': '❤️', 'label': 'Yêu thích'},
-          {'emoji': '😂', 'label': 'Vui vẻ'},
-          {'emoji': '😍', 'label': 'Thích'},
-          {'emoji': '😮', 'label': 'Bất ngờ'},
-          {'emoji': '😢', 'label': 'Buồn'},
-        ];
-
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Wrap(
-              runSpacing: 12,
-              spacing: 12,
-              children: reactions.map((reactionItem) {
-                return InkWell(
-                  borderRadius: BorderRadius.circular(18),
-                  onTap: () => Navigator.pop(sheetContext, reactionItem['emoji']),
-                  child: Container(
-                    width: 96,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF202020),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(reactionItem['emoji']!, style: const TextStyle(fontSize: 28)),
-                        const SizedBox(height: 8),
-                        Text(
-                          reactionItem['label']!,
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.manrope(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF080808),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF080808),
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: Text(
-          'Bài viết',
-          style: GoogleFonts.manrope(fontWeight: FontWeight.w800),
-        ),
-      ),
-      body: RefreshIndicator(
-        onRefresh: () => _loadProfileAndPosts(refresh: true),
-        child: _isLoading && _posts.isEmpty
-            ? const Center(child: CircularProgressIndicator(color: Colors.white))
-            : _error != null && _posts.isEmpty
-                ? ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(24),
+      body: Column(
+        children: [
+          // Header with toggle
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Bảng tin',
+                    style: GoogleFonts.manrope(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const SizedBox(height: 80),
-                      Icon(
-                        Icons.cloud_off_rounded,
-                        color: Colors.white.withValues(alpha: 0.6),
-                        size: 48,
+                      ChoiceChip(
+                        label: const Text('Tất cả'),
+                        selected: !_showOnlyMine,
+                        onSelected: (v) {
+                          if (!_showOnlyMine) return;
+                          setState(() {
+                            _showOnlyMine = false;
+                            _loadProfileAndPosts(refresh: true);
+                          });
+                        },
                       ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Không tải được bài viết',
-                        textAlign: TextAlign.center,
-                        style: GoogleFonts.manrope(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _error!,
-                        textAlign: TextAlign.center,
-                        style: GoogleFonts.manrope(
-                          color: Colors.white.withValues(alpha: 0.65),
-                          fontSize: 13,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      FilledButton(
-                        onPressed: () => _loadProfileAndPosts(refresh: true),
-                        child: const Text('Thử lại'),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('Của tôi'),
+                        selected: _showOnlyMine,
+                        onSelected: (v) {
+                          if (_showOnlyMine) return;
+                          setState(() {
+                            _showOnlyMine = true;
+                            _loadProfileAndPosts(refresh: true);
+                          });
+                        },
                       ),
                     ],
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                    itemCount: _posts.length + 1,
-                    itemBuilder: (context, index) {
-                      if (index == _posts.length) {
-                        if (_isLoadingMore) {
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 18),
-                            child: Center(
-                              child: CircularProgressIndicator(
-                                color: Colors.white.withValues(alpha: 0.7),
-                              ),
-                            ),
-                          );
-                        }
-
-                        if (!_hasMore && _posts.isNotEmpty) {
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 18),
-                            child: Center(
-                              child: Text(
-                                'Đã xem hết bài viết',
-                                style: GoogleFonts.manrope(
-                                  color: Colors.white.withValues(alpha: 0.45),
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          );
-                        }
-
-                        return const SizedBox(height: 12);
-                      }
-
-                      final post = _posts[index];
-                      final postId = post['id']?.toString() ?? '$index';
-                      final user = post['user'] is Map ? Map<String, dynamic>.from(post['user'] as Map) : <String, dynamic>{};
-                      final authorName = user['name']?.toString().trim().isNotEmpty == true
-                          ? user['name'].toString().trim()
-                          : 'Người dùng';
-                      final avatarUrl = PostApiService.resolveMediaUrl(user['avatarUrl']?.toString());
-                      final caption = post['caption']?.toString().trim() ?? '';
-                      final imageUrl = PostApiService.resolveMediaUrl(post['imageUrl']?.toString());
-                      final reaction = _localReactions[postId];
-
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
-                        child: _PostCard(
-                          authorName: authorName,
-                          avatarUrl: avatarUrl,
-                          timeLabel: _formatTime(post['createdAt']?.toString()),
-                          caption: caption,
-                          imageUrl: imageUrl,
-                          reactionLabel: reaction,
-                          onReactTap: () async {
-                            final selected = await _showReactions();
-                            if (!mounted || selected == null) return;
-                            setState(() {
-                              _localReactions[postId] = selected;
-                            });
-                          },
-                          onMessageTap: () => _openChat(post),
-                          currentUserName: _currentUserName,
-                          currentUserAvatarUrl: _currentUserAvatarUrl,
-                        ),
-                      );
-                    },
                   ),
+                ],
+              ),
+            ),
+          ),
+          // Main content
+          Expanded(
+            child: _isLoading && _posts.isEmpty
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  )
+                : _error != null && _posts.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.cloud_off_rounded,
+                              color: Colors.white.withValues(alpha: 0.6),
+                              size: 48,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Không tải được bài viết',
+                              style: GoogleFonts.manrope(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style: GoogleFonts.manrope(
+                                color: Colors.white.withValues(alpha: 0.65),
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton(
+                              onPressed: () => _loadProfileAndPosts(refresh: true),
+                              child: const Text('Thử lại'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : _posts.isEmpty
+                        ? Center(
+                            child: Text(
+                              'Chưa có bài viết',
+                              style: GoogleFonts.manrope(
+                                color: Colors.white.withValues(alpha: 0.6),
+                                fontSize: 16,
+                              ),
+                            ),
+                          )
+                        : Stack(
+                            children: [
+                              PageView.builder(
+                                controller: _pageController,
+                                itemCount: _posts.length,
+                                itemBuilder: (context, index) {
+                                  final post = _posts[index];
+                                  final postId = post['id']?.toString() ?? '$index';
+                                  final author = post['author'] is Map
+                                      ? Map<String, dynamic>.from(post['author'] as Map)
+                                      : <String, dynamic>{};
+                                  final authorId = int.tryParse(author['id']?.toString() ?? '');
+                                  final authorName = (author['name']?.toString().trim().isNotEmpty ?? false)
+                                      ? author['name'].toString().trim()
+                                      : 'Người dùng';
+                                  final avatarUrl = PostApiService.resolveMediaUrl(author['avatarUrl']?.toString());
+                                  final caption = post['caption']?.toString().trim() ?? '';
+                                  final imageUrl = PostApiService.resolveMediaUrl(post['imageUrl']?.toString());
+                                  final reaction = _localReactions[postId];
+                                  // Fix: so sánh bằng ID thay vì tên để tránh nhầm lẫn khi 2 user trùng tên
+                                  final isMyPost = _currentUserId != null && authorId != null && authorId == _currentUserId;
+
+                                  return _FullscreenPostCard(
+                                    authorName: authorName,
+                                    avatarUrl: avatarUrl,
+                                    timeLabel: _formatTime(post['createdAt']?.toString()),
+                                    caption: caption,
+                                    imageUrl: imageUrl,
+                                    reactionLabel: reaction,
+                                    isMyPost: isMyPost,
+                                    onMessageTap: (replyText) => _openChat(post, replyMessage: replyText),
+                                    currentUserName: _currentUserName,
+                                    currentUserAvatarUrl: _currentUserAvatarUrl,
+                                  );
+
+                                },
+                              ),
+                              // Position indicator at the top
+                              if (_posts.isNotEmpty)
+                                Positioned(
+                                  top: 16,
+                                  left: 0,
+                                  right: 0,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: List.generate(
+                                        _posts.length,
+                                        (index) => Expanded(
+                                          child: Container(
+                                            height: 3,
+                                            margin: const EdgeInsets.symmetric(horizontal: 4),
+                                            decoration: BoxDecoration(
+                                              color: index == _currentPostIndex
+                                                  ? Colors.white
+                                                  : Colors.white.withValues(alpha: 0.3),
+                                              borderRadius: BorderRadius.circular(2),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _PostCard extends StatelessWidget {
-  const _PostCard({
+class _FullscreenPostCard extends StatefulWidget {
+  const _FullscreenPostCard({
     required this.authorName,
     required this.avatarUrl,
     required this.timeLabel,
     required this.caption,
     required this.imageUrl,
     required this.reactionLabel,
-    required this.onReactTap,
+    required this.isMyPost,
     required this.onMessageTap,
     required this.currentUserName,
     required this.currentUserAvatarUrl,
@@ -379,10 +395,29 @@ class _PostCard extends StatelessWidget {
   final String caption;
   final String imageUrl;
   final String? reactionLabel;
-  final VoidCallback onReactTap;
-  final VoidCallback onMessageTap;
+  final bool isMyPost;
+  final void Function(String message) onMessageTap;
   final String currentUserName;
   final String? currentUserAvatarUrl;
+
+  @override
+  State<_FullscreenPostCard> createState() => _FullscreenPostCardState();
+}
+
+class _FullscreenPostCardState extends State<_FullscreenPostCard> {
+  late TextEditingController _messageController;
+
+  @override
+  void initState() {
+    super.initState();
+    _messageController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
 
   String _initials(String value) {
     final parts = value.trim().split(RegExp(r'\s+')).where((part) => part.isNotEmpty).toList();
@@ -393,41 +428,102 @@ class _PostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasAvatar = avatarUrl.trim().isNotEmpty;
+    final hasAvatar = widget.avatarUrl.trim().isNotEmpty;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.04),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    return GestureDetector(
+      onTap: () {}, // Prevent accidental taps
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+          // Background image
+          if (widget.imageUrl.isNotEmpty)
+            Image.network(
+              widget.imageUrl,
+              fit: BoxFit.cover,
+              cacheWidth: 800, // Giới hạn kích thước decode ảnh để tránh tràn RAM (màn hình đen)
+              errorBuilder: (context, error, stackTrace) {
+                return Container(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  alignment: Alignment.center,
+                  child: Icon(
+                    Icons.broken_image_outlined,
+                    color: Colors.white.withValues(alpha: 0.45),
+                    size: 60,
+                  ),
+                );
+              },
+            ),
+          // Dark gradient overlay on top
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              height: 120,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.7),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // Dark gradient overlay on bottom
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              height: 300,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.98),
+                    Colors.black.withValues(alpha: 0.85),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // User info at top
+          Positioned(
+            top: 44,
+            left: 16,
+            right: 16,
             child: Row(
               children: [
                 Container(
-                  width: 46,
-                  height: 46,
+                  width: 44,
+                  height: 44,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: hasAvatar ? Colors.transparent : Colors.white,
                     image: hasAvatar
                         ? DecorationImage(
-                            image: NetworkImage(avatarUrl),
+                            image: ResizeImage(NetworkImage(widget.avatarUrl), width: 120),
                             fit: BoxFit.cover,
                           )
                         : null,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.3),
+                      width: 2,
+                    ),
                   ),
                   child: !hasAvatar
                       ? Center(
                           child: Text(
-                            _initials(authorName),
+                            _initials(widget.authorName),
                             style: GoogleFonts.manrope(
                               color: const Color(0xFF5B4BFF),
                               fontWeight: FontWeight.w800,
+                              fontSize: 14,
                             ),
                           ),
                         )
@@ -439,7 +535,7 @@ class _PostCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        authorName == currentUserName ? 'Bạn' : authorName,
+                        widget.authorName == widget.currentUserName ? 'Bạn' : widget.authorName,
                         style: GoogleFonts.manrope(
                           color: Colors.white,
                           fontSize: 15,
@@ -448,93 +544,174 @@ class _PostCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        timeLabel,
+                        widget.timeLabel,
                         style: GoogleFonts.manrope(
-                          color: Colors.white.withValues(alpha: 0.55),
+                          color: Colors.white.withValues(alpha: 0.65),
                           fontSize: 12,
                         ),
                       ),
                     ],
                   ),
                 ),
-                IconButton(
-                  onPressed: onMessageTap,
-                  icon: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.white),
-                ),
               ],
             ),
           ),
-          if (imageUrl.isNotEmpty)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(24),
-              child: AspectRatio(
-                aspectRatio: 1,
-                child: Image.network(
-                  imageUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: Colors.white.withValues(alpha: 0.05),
-                      alignment: Alignment.center,
-                      child: Icon(
-                        Icons.broken_image_outlined,
-                        color: Colors.white.withValues(alpha: 0.45),
-                        size: 40,
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-          if (caption.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 14, 2),
+          // Caption at bottom
+          if (widget.caption.isNotEmpty)
+            Positioned(
+              bottom: 156,
+              left: 16,
+              right: 16,
               child: Text(
-                caption,
+                widget.caption,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.manrope(
-                  color: Colors.white.withValues(alpha: 0.92),
+                  color: Colors.white,
                   fontSize: 14,
-                  height: 1.35,
+                  fontWeight: FontWeight.w500,
+                  height: 1.4,
                 ),
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
-            child: Row(
-              children: [
-                TextButton.icon(
-                  onPressed: onReactTap,
-                  icon: Text(
-                    reactionLabel ?? '🤍',
-                    style: const TextStyle(fontSize: 18),
-                  ),
-                  label: Text(
-                    reactionLabel == null ? 'Thả cảm xúc' : reactionLabel!,
-                    style: GoogleFonts.manrope(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
+          if (!widget.isMyPost)
+            Positioned(
+              bottom: 100,
+              left: 16,
+              right: 16,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.start,
+                children: const [
+                  Text(
+                    'Nhấn gửi để trả lời',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  onPressed: onMessageTap,
-                  icon: const Icon(Icons.send_outlined, color: Colors.white),
-                ),
-                IconButton(
-                  onPressed: onMessageTap,
-                  icon: const Icon(Icons.message_outlined, color: Colors.white),
-                ),
-                const Spacer(),
-                Text(
-                  'Gửi tin',
-                  style: GoogleFonts.manrope(
-                    color: Colors.white.withValues(alpha: 0.45),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+                ],
+              ),
+            ),
+          // Message input box at bottom
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: widget.isMyPost
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: widget.reactionLabel == null
+                              ? MainAxisAlignment.center
+                              : MainAxisAlignment.start,
+                          children: [
+                            if (widget.reactionLabel != null) ...[
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.white.withValues(alpha: 0.15),
+                                ),
+                                child: const Icon(
+                                  Icons.person,
+                                  color: Colors.white70,
+                                  size: 18,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                widget.reactionLabel!,
+                                style: GoogleFonts.manrope(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ] else ...[
+                              Text(
+                                'Chưa có hoạt động nào',
+                                style: GoogleFonts.manrope(
+                                  color: Colors.white.withValues(alpha: 0.75),
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.15),
+                                ),
+                              ),
+                              child: TextField(
+                                controller: _messageController,
+                                style: GoogleFonts.manrope(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Trả lời...',
+                                  hintStyle: GoogleFonts.manrope(
+                                    color: Colors.white.withValues(alpha: 0.5),
+                                    fontSize: 14,
+                                  ),
+                                  border: InputBorder.none,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                ),
+                                cursorColor: Colors.white,
+                                maxLines: 1,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          GestureDetector(
+                            onTap: () {
+                              final text = _messageController.text.trim();
+                              if (text.isNotEmpty) {
+                                _messageController.clear();
+                                widget.onMessageTap(text);
+                              }
+                            },
+                            child: Container(
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.2),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.3),
+                                ),
+                              ),
+                              child: Icon(
+                                Icons.send_rounded,
+                                color: Colors.white.withValues(alpha: 0.8),
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
             ),
           ),
         ],
@@ -542,3 +719,4 @@ class _PostCard extends StatelessWidget {
     );
   }
 }
+

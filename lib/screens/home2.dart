@@ -122,17 +122,26 @@ class _Home2State extends State<Home2> {
 
   Future<void> _syncSocialPost({required String token}) async {
     final caption = _captionController.text.trim();
-    final result = await _postApiService.createPost(
+    debugPrint('Starting social upload, caption=${caption.length} chars');
+    final result = await _postApiService.uploadPost(
       token: token,
       imageFile: widget.imageFile,
       caption: caption,
     );
 
-    if (result.success) {
-      try {
-        calendarRefreshNotifier.value++;
-      } catch (_) {}
+    debugPrint('Social upload finished: success=${result.success} status=${result.statusCode} message=${result.message}');
+
+    if (!result.success) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể upload bài viết: ${result.message}')),
+      );
+      return;
     }
+
+    try {
+      calendarRefreshNotifier.value++;
+    } catch (_) {}
   }
 
   Future<void> _syncTransactionForBudget({

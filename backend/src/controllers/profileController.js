@@ -25,12 +25,26 @@ function verifyPassword(password, storedValue) {
   return crypto.timingSafeEqual(originalBuffer, hashBuffer);
 }
 
-function normalizeUserRow(row) {
+function getMediaUrl(req, rawUrl) {
+  if (!rawUrl) return null;
+  const value = rawUrl.toString().trim();
+  if (!value) return null;
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return value;
+  }
+  const root = `${req.protocol}://${req.get('host')}`;
+  if (value.startsWith('/')) {
+    return `${root}${value}`;
+  }
+  return `${root}/${value}`;
+}
+
+function normalizeUserRow(req, row) {
   return {
     id: row.id,
     name: row.name,
     email: row.email,
-    avatar_url: row.avatar_url || null,
+    avatar_url: getMediaUrl(req, row.avatar_url) || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -52,7 +66,7 @@ async function getMyProfile(req, res) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    return res.json({ success: true, message: 'Get profile successful', data: normalizeUserRow(rows[0]) });
+    return res.json({ success: true, message: 'Get profile successful', data: normalizeUserRow(req, rows[0]) });
   } catch (error) {
     console.error('[profile] getMyProfile error:', error);
     return res.status(500).json({ success: false, message: 'Internal server error' });
@@ -75,7 +89,7 @@ async function getProfileById(req, res) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    return res.json({ success: true, message: 'Get public profile successful', data: rows[0] });
+    return res.json({ success: true, message: 'Get public profile successful', data: normalizeUserRow(req, rows[0]) });
   } catch (error) {
     console.error('[profile] getProfileById error:', error);
     return res.status(500).json({ success: false, message: 'Internal server error' });
@@ -116,7 +130,7 @@ async function updateMyProfile(req, res) {
       [userId],
     );
 
-    return res.json({ success: true, message: 'Profile updated successfully', data: normalizeUserRow(rows[0]) });
+    return res.json({ success: true, message: 'Profile updated successfully', data: normalizeUserRow(req, rows[0]) });
   } catch (error) {
     console.error('[profile] updateMyProfile error:', error);
     return res.status(500).json({ success: false, message: 'Internal server error' });
@@ -152,7 +166,7 @@ async function updateMyAvatar(req, res) {
       success: true,
       message: 'Avatar updated successfully',
       avatar_url: avatarUrl,
-      data: normalizeUserRow(rows[0]),
+      data: normalizeUserRow(req, rows[0]),
     });
   } catch (error) {
     console.error('[profile] updateMyAvatar error:', error);

@@ -6,6 +6,7 @@ import 'package:flutter_application_1/screens/budget.dart';
 import 'package:flutter_application_1/screens/statistics.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class Profile extends StatefulWidget {
   final String userInitials;
@@ -79,6 +80,51 @@ class _ProfileState extends State<Profile> {
         ),
       ),
     );
+  }
+
+  void _showComingSoon(String feature) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          '🚀 Sắp ra mắt',
+          style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Tính năng "$feature" đang được phát triển và sẽ có trong phiên bản tiếp theo.',
+          style: GoogleFonts.manrope(color: Colors.white70, fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Đã hiểu', style: GoogleFonts.manrope(color: const Color(0xFF5B4BFF), fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendFeedback() async {
+    final uri = Uri(
+      scheme: 'mailto',
+      path: 'support@example.com',
+      query: 'subject=Phản hồi ứng dụng&body=',
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      _showComingSoon('Gửi phản hồi');
+    }
+  }
+
+  Future<void> _rateApp() async {
+    _showComingSoon('Đánh giá ứng dụng');
+  }
+
+  Future<void> _shareApp() async {
+    _showComingSoon('Chia sẻ ứng dụng');
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -490,20 +536,20 @@ class _ProfileState extends State<Profile> {
                     );
                   },
                 ),
-                _buildMenuItem(icon: Icons.notifications_none_rounded, iconColor: Colors.white, title: 'Thông báo nhắc nhở', trailingText: 'Tắt', onTap: () {}),
-                _buildMenuItem(icon: Icons.g_translate_rounded, iconColor: Colors.white, title: 'Ngôn ngữ hiển thị', trailingText: 'Tiếng Việt', onTap: () {}),
-                _buildMenuItem(icon: Icons.dark_mode_outlined, iconColor: Colors.white, title: 'Giao diện', trailingText: 'Tối', onTap: () {}),
-                _buildMenuItem(icon: Icons.monetization_on_outlined, iconColor: Colors.white, title: 'Tiền tệ hiển thị', trailingText: 'VND', onTap: () {}),
+                _buildMenuItem(icon: Icons.notifications_none_rounded, iconColor: Colors.white, title: 'Thông báo nhắc nhở', trailingText: 'Tắt', onTap: () => _showComingSoon('Thông báo nhắc nhở')),
+                _buildMenuItem(icon: Icons.g_translate_rounded, iconColor: Colors.white, title: 'Ngôn ngữ hiển thị', trailingText: 'Tiếng Việt', onTap: () => _showComingSoon('Chọn ngôn ngữ')),
+                _buildMenuItem(icon: Icons.dark_mode_outlined, iconColor: Colors.white, title: 'Giao diện', trailingText: 'Tối', onTap: () => _showComingSoon('Cài đặt giao diện')),
+                _buildMenuItem(icon: Icons.monetization_on_outlined, iconColor: Colors.white, title: 'Tiền tệ hiển thị', trailingText: 'VND', onTap: () => _showComingSoon('Chọn tiền tệ')),
               ],
             ),
             const SizedBox(height: 16),
             _buildMenuSection(
               children: [
-                _buildMenuItem(icon: Icons.mail_outline_rounded, iconColor: Colors.white, title: 'Gửi phản hồi', onTap: () {}),
-                _buildMenuItem(icon: Icons.star_outline_rounded, iconColor: Colors.white, title: 'Đánh giá ứng dụng', onTap: () {}),
-                _buildMenuItem(icon: Icons.share_outlined, iconColor: Colors.white, title: 'Chia sẻ ứng dụng', onTap: () {}),
-                _buildMenuItem(icon: Icons.description_outlined, iconColor: Colors.white, title: 'Điều khoản dịch vụ', onTap: () {}),
-                _buildMenuItem(icon: Icons.security_outlined, iconColor: Colors.white, title: 'Chính sách bảo mật', onTap: () {}),
+                _buildMenuItem(icon: Icons.mail_outline_rounded, iconColor: Colors.white, title: 'Gửi phản hồi', onTap: _sendFeedback),
+                _buildMenuItem(icon: Icons.star_outline_rounded, iconColor: Colors.white, title: 'Đánh giá ứng dụng', onTap: _rateApp),
+                _buildMenuItem(icon: Icons.share_outlined, iconColor: Colors.white, title: 'Chia sẻ ứng dụng', onTap: _shareApp),
+                _buildMenuItem(icon: Icons.description_outlined, iconColor: Colors.white, title: 'Điều khoản dịch vụ', onTap: () => _showComingSoon('Điều khoản dịch vụ')),
+                _buildMenuItem(icon: Icons.security_outlined, iconColor: Colors.white, title: 'Chính sách bảo mật', onTap: () => _showComingSoon('Chính sách bảo mật')),
               ],
             ),
             const SizedBox(height: 24),

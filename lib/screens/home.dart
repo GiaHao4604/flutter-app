@@ -8,6 +8,7 @@ import 'package:flutter_application_1/widgets/camera_preview_widget.dart';
 import 'package:flutter_application_1/screens/calendar.dart';
 import 'package:flutter_application_1/widgets/camera_action_button.dart';
 import 'package:flutter_application_1/screens/post_feed_screen.dart';
+import 'package:flutter_application_1/screens/chat_list_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_application_1/screens/profile.dart'; 
 
@@ -24,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _isLoading = true;
   int _selectedTab = 1; // Mặc định ở giữa (Trang 1 - Home/Camera)
+  int? _userId;
   String _userInitials = 'U';
   String? _userAvatarUrl; // Lưu giữ link ảnh mạng (Ví dụ: http://...)
   
@@ -33,17 +35,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final GlobalKey<CameraPreviewWidgetState> _cameraKey = GlobalKey<CameraPreviewWidgetState>();
   late PageController _pageController;
+  late PageController _verticalPageController;
+  int _verticalPage = 0;
 
   @override
   void initState() {
     super.initState();
     _pageController = PageController(initialPage: _selectedTab);
+    _verticalPageController = PageController(initialPage: 0);
     _loadProfile();
   }
 
   @override
   void dispose() {
     _pageController.dispose();
+    _verticalPageController.dispose();
     super.dispose();
   }
 
@@ -64,23 +70,34 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (!result.success) {
         debugPrint("🔴 API getMe thất bại: ${result.message}");
-        // SỬA: Thay vì lập tức đá về login làm nghẽn app, ta hiển thị SnackBar thông báo lỗi cho dev/user biết
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Không thể tải thông tin: ${result.message}')),
-        );
-        setState(() {
-          _isLoading = false; // Vẫn tắt loading để user dùng được các tính năng offline/camera
-        });
+        // Nếu lỗi 401/403 (token hết hạn), redirect về login
+        if (result.statusCode == 401 || result.statusCode == 403) {
+          await _sessionService.clearToken();
+          if (!mounted) return;
+          Navigator.pushReplacementNamed(context, '/login');
+          return;
+        }
+        // Lỗi mạng/server tạm thời — cho phép dùng offline
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Không thể tải thông tin: ${result.message}')),
+          );
+          setState(() {
+            _isLoading = false;
+          });
+        }
         return;
       }
 
       final name = (result.data?['name'] as String?)?.trim() ?? 'User';
       final email = (result.data?['email'] as String?)?.trim() ?? 'user@gmail.com';
       final avatar = result.data?['avatar_url'] as String?;
+      final userId = int.tryParse(result.data?['id']?.toString() ?? '') ?? 0;
       await _sessionService.saveCurrentUserEmail(email);
       
       setState(() {
         _isLoading = false;
+        _userId = userId > 0 ? userId : null;
         _userName = name;
         _userEmail = email;
         _userInitials = _buildInitials(name);
@@ -146,10 +163,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openPostFeed() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const PostFeedScreen()),
+  void _showFeed() {
+    _verticalPageController.animateToPage(
+      1,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeInOut,
     );
   }
 
@@ -166,60 +184,75 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final systemBottomPadding = MediaQuery.viewPaddingOf(context).bottom;
 
-    return Scaffold(
-      extendBody: true,
-      backgroundColor: const Color(0xFF080808),
-      body: Stack(
-        children: [
-          const _DarkBackground(),
-          PageView(
-            controller: _pageController,
-            onPageChanged: (index) {
-              setState(() {
-                _selectedTab = index;
-              });
-            },
+    return PageView(
+      controller: _verticalPageController,
+      scrollDirection: Axis.vertical,
+      physics: (_selectedTab == 1 || _verticalPage == 1) 
+          ? const BouncingScrollPhysics() 
+          : const NeverScrollableScrollPhysics(),
+      onPageChanged: (index) {
+        setState(() {
+          _verticalPage = index;
+        });
+      },
+      children: [
+        Scaffold(
+          extendBody: true,
+          backgroundColor: const Color(0xFF080808),
+          body: Stack(
             children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 120),
-                child: const CalendarScreen(), 
-              ),
-              _buildCameraPage(),
-              _buildChatPage(),
-            ],
-          ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: EdgeInsets.only(
-                bottom: systemBottomPadding > 0 ? systemBottomPadding : 16, 
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+              const _DarkBackground(),
+              PageView(
+                controller: _pageController,
+                onPageChanged: (index) {
+                  setState(() {
+                    _selectedTab = index;
+                  });
+                },
                 children: [
-                  AnimatedOpacity(
-                    duration: const Duration(milliseconds: 200),
-                    opacity: _selectedTab == 1 ? 1.0 : 0.0,
-                    child: GestureDetector(
-                      onTap: _openPostFeed,
-                      child: Icon(
-                        Icons.keyboard_arrow_down_rounded,
-                        color: Colors.white.withValues(alpha: 0.8),
-                        size: 30,
-                      ),
-                    ),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 120),
+                    child: const CalendarScreen(),
                   ),
-                  const SizedBox(height: 10),
-                  _BottomPill(
-                    selectedIndex: _selectedTab,
-                    onTap: _handleNavTap,
-                  ),
+                  _buildCameraPage(),
+                  _buildChatPage(),
                 ],
               ),
-            ),
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: EdgeInsets.only(
+                    bottom: systemBottomPadding > 0 ? systemBottomPadding : 16,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AnimatedOpacity(
+                        duration: const Duration(milliseconds: 200),
+                        opacity: _verticalPage == 0 ? 1.0 : 0.0,
+                        child: GestureDetector(
+                          onTap: _showFeed,
+                          child: Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: Colors.white.withValues(alpha: 0.8),
+                            size: 30,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      _BottomPill(
+                        selectedIndex: _selectedTab,
+                        onTap: _handleNavTap,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+        const PostFeedScreen(),
+      ],
     );
   }
 
@@ -276,15 +309,43 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildChatPage() {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 120),
-      child: Center(
-        child: Text(
-          'Giao diện Chat đang phát triển',
-          style: GoogleFonts.manrope(color: Colors.white, fontSize: 18),
+    // Nếu vẫn đang loading thì hiển thị indicator
+    if (_isLoading) {
+      return const Padding(
+        padding: EdgeInsets.only(bottom: 120),
+        child: Center(
+          child: CircularProgressIndicator(color: Colors.white),
         ),
-      ),
-    );
+      );
+    }
+
+    // Đã load xong nhưng không lấy được userId — hiển thị thông báo lỗi
+    if (_userId == null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 120),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.wifi_off_rounded, color: Colors.white38, size: 48),
+              const SizedBox(height: 12),
+              const Text(
+                'Không thể tải thông tin người dùng',
+                style: TextStyle(color: Colors.white54, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: _loadProfile,
+                child: const Text('Thử lại', style: TextStyle(color: Colors.white70)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ChatListScreen(currentUserId: _userId!);
   }
 }
 

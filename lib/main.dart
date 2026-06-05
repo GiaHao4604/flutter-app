@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_application_1/screens/home.dart';
 import 'package:flutter_application_1/screens/login.dart';
 import 'package:flutter_application_1/screens/register.dart';
+import 'package:flutter_application_1/screens/admin/admin_home.dart';
 
 void main() async {
-WidgetsFlutterBinding.ensureInitialized();
+  WidgetsFlutterBinding.ensureInitialized();
 
-runApp(const MainApp());
+  // Làm trong suốt thanh Status Bar (pin, sóng, đồng hồ)
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+  ));
+
+  runApp(const MainApp());
 }
 
 class MainApp extends StatelessWidget {
@@ -39,15 +47,12 @@ debugShowCheckedModeBanner: false,
   initialRoute: '/login',
 
   routes: {
-    '/login': (context) => const AppWrapper(
-          child: Login(),
-        ),
-
-    '/register': (context) => const AppWrapper(
-          child: Register(),
-        ),
+    '/login': (context) => const Login(),
+    '/register': (context) => const Register(),
 
     '/home': (context) => const HomeScreen(),
+    
+    '/admin_home': (context) => const AdminHome(),
   },
 );
 
@@ -55,36 +60,4 @@ debugShowCheckedModeBanner: false,
 }
 }
 
-class AppWrapper extends StatelessWidget {
-final Widget child;
-
-const AppWrapper({
-super.key,
-required this.child,
-});
-
-@override
-Widget build(BuildContext context) {
-return Scaffold(
-body: Container(
-decoration: const BoxDecoration(
-gradient: LinearGradient(
-begin: Alignment.topLeft,
-end: Alignment.bottomRight,
-colors: [
-Color(0xFF5C4DE1),
-Color(0xFF7A3CF0),
-],
-),
-),
-
-
-    child: SafeArea(
-      child: child,
-    ),
-  ),
-);
-
-
-}
-}
+// AppWrapper removed

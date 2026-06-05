@@ -5,7 +5,8 @@ const fs = require('fs');
 
 const uploadDir = path.join(
   __dirname,
-  '..',
+  '..', // /middleware → /src
+  '..', // /src → /backend
   'uploads',
   'posts',
 );

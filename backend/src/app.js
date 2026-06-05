@@ -11,6 +11,8 @@ const qrRoutes = require('./routes/qrRoutes');
 const calendarRoutes = require('./routes/calendarRoutes');
 const financeRoutes = require('./routes/financeRoutes');
 const profileRoutes = require('./routes/profileRoutes');
+const chatRoutes = require('./routes/chatRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 const app = express();
 
@@ -29,6 +31,8 @@ app.use('/api/qr', qrRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

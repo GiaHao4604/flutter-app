@@ -370,7 +370,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
         final amount = _parseAmount(post['amount']);
         if (amount <= 0) continue;
 
-        final signedAmount = _postIsExpense(post) ? amount : amount;
+        // Fix: chỉ tính expense (chi tiêu) vào budget spent; income không trừ budget
+        if (!_postIsExpense(post)) continue;
+        final signedAmount = amount;
         totals.update(
           categoryKey,
           (current) => current + signedAmount,
