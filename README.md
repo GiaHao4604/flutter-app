@@ -9,7 +9,7 @@
 * **🌐 Mạng xã hội (News Feed):** Đăng dòng trạng thái, đính kèm hình ảnh, tương tác trên bài viết. Chế độ riêng tư cho phép ẩn số tiền giao dịch khi đăng tải.
 * **💬 Nhắn tin Thời gian thực (Real-time Chat):** Chat tốc độ cao nhờ công nghệ WebSocket. Hỗ trợ gửi ảnh, nhấn giữ tin nhắn để mở menu tương tác (trả lời, thu hồi tin nhắn).
 * **📅 Lịch trình cá nhân:** Quản lý giao dịch theo ngày trên giao diện lịch, dễ dàng theo dõi dòng tiền.
-* **🛡️ Hệ thống Quản trị (Admin Panel):** Phân quyền người dùng, khóa tài khoản, xử lý và xóa các bài đăng vi phạm.
+* **🛡️ Hệ thống Quản trị (Admin Panel):** Phân quyền người dùng, khóa/xóa tài khoản, xử lý và xóa các bài đăng vi phạm.
 
 ## 🛠 Công nghệ sử dụng
 * **Frontend (Mobile App):** Flutter / Dart
