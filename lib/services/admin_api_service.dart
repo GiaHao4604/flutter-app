@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_application_1/services/auth_session_service.dart';
-import 'package:flutter/foundation.dart';
+import 'api_config.dart';
 
 class AdminApiResult {
   final bool success;
@@ -18,7 +18,7 @@ class AdminApiResult {
 }
 
 class AdminApiService {
-  static const String baseUrl = 'http://192.168.1.240:3000/api/admin';
+  static final String baseUrl = ApiConfig.apiUrl('admin');
   final AuthSessionService _sessionService = AuthSessionService();
 
   Future<Map<String, String>> _getHeaders() async {

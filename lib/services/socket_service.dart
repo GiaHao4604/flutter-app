@@ -1,15 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'api_config.dart';
 import 'package:flutter_application_1/services/auth_session_service.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
-
-class _SocketNotConnectedException implements Exception {
-  _SocketNotConnectedException(this.message);
-  final String message;
-  @override
-  String toString() => message;
-}
 
 class SocketService {
   SocketService._internal();
@@ -23,35 +17,44 @@ class SocketService {
   final _typingController = StreamController<Map<String, dynamic>>.broadcast();
   final _presenceController = StreamController<Map<String, dynamic>>.broadcast();
   final _seenController = StreamController<Map<String, dynamic>>.broadcast();
+  final _systemNotificationController = StreamController<Map<String, dynamic>>.broadcast();
+  final _messageDeletedController = StreamController<Map<String, dynamic>>.broadcast();
 
   Stream<Map<String, dynamic>> get onNewMessage => _newMessageController.stream;
   Stream<Map<String, dynamic>> get onTyping => _typingController.stream;
   Stream<Map<String, dynamic>> get onPresence => _presenceController.stream;
   Stream<Map<String, dynamic>> get onSeen => _seenController.stream;
+  Stream<Map<String, dynamic>> get onSystemNotification => _systemNotificationController.stream;
+  Stream<Map<String, dynamic>> get onMessageDeleted => _messageDeletedController.stream;
 
   bool get isConnected => _socket?.connected == true;
 
-  String _resolveSocketUrl() {
-    if (kIsWeb) {
-      return 'http://localhost:3000';
+  // Danh sách URL ưu tiên - thử lần lượt đến khi nào kết nối được
+  List<String> _candidateSocketUrls() {
+    return [ApiConfig.lanOrigin, ApiConfig.androidEmulatorOrigin];
+  }
+
+  // Kiểm tra TCP xem server có thể kết nối không (timeout 2 giây)
+  Future<String?> _findReachableUrl() async {
+    for (final url in _candidateSocketUrls()) {
+      try {
+        final uri = Uri.parse(url);
+        final sock = await Socket.connect(
+          uri.host,
+          uri.port,
+          timeout: const Duration(seconds: 2),
+        );
+        sock.destroy();
+        return url;
+      } catch (_) {
+        continue;
+      }
     }
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-        return 'http://10.0.2.2:3000';
-      case TargetPlatform.iOS:
-      case TargetPlatform.macOS:
-      case TargetPlatform.windows:
-      case TargetPlatform.linux:
-        return 'http://localhost:3000';
-      default:
-        return 'http://localhost:3000';
-    }
+    return null;
   }
 
   Future<void> connect() async {
-    if (isConnected) {
-      return;
-    }
+    if (isConnected) return;
 
     if (_connectCompleter != null) {
       return _connectCompleter!.future;
@@ -61,13 +64,24 @@ class SocketService {
 
     final token = await AuthSessionService().getToken();
     if (token == null || token.isEmpty) {
-      _connectCompleter?.completeError(_SocketNotConnectedException('No token available'));
+      _connectCompleter?.completeError(Exception('Socket: No token'));
       _connectCompleter = null;
       return;
     }
 
+    // Tự động tìm địa chỉ server khả dụng (LAN hoặc Emulator)
+    final reachableUrl = await _findReachableUrl();
+    if (reachableUrl == null) {
+      debugPrint('Socket: Không tìm được server nào trong mạng LAN');
+      _connectCompleter?.completeError(Exception('timeout'));
+      _connectCompleter = null;
+      return;
+    }
+
+    debugPrint('Socket: Kết nối tới $reachableUrl');
+
     _socket = io.io(
-      _resolveSocketUrl(),
+      reachableUrl,
       io.OptionBuilder()
           .setTransports(['websocket'])
           .disableAutoConnect()
@@ -98,6 +112,12 @@ class SocketService {
       }
     });
 
+    _socket?.on('system_notification', (data) {
+      if (data is Map<String, dynamic>) {
+        _systemNotificationController.add(data);
+      }
+    });
+
     _socket?.on('user_presence', (data) {
       if (data is Map<String, dynamic>) {
         _presenceController.add(data);
@@ -107,6 +127,12 @@ class SocketService {
     _socket?.on('messages_seen', (data) {
       if (data is Map<String, dynamic>) {
         _seenController.add(data);
+      }
+    });
+
+    _socket?.on('message_deleted', (data) {
+      if (data is Map<String, dynamic>) {
+        _messageDeletedController.add(data);
       }
     });
 

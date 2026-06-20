@@ -19,7 +19,6 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
   List<dynamic> _users = [];
   String _errorMessage = '';
   String _currentUserRole = 'admin';
-  String _currentUserEmail = '';
 
   @override
   void initState() {
@@ -36,7 +35,6 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
       final meResult = await _authApiService.getMe(token: token);
       if (meResult.success) {
         _currentUserRole = meResult.data?['role'] ?? 'admin';
-        _currentUserEmail = meResult.data?['email'] ?? '';
       }
     }
 
@@ -44,6 +42,25 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
     
     if (result.success && result.data != null) {
       _users = List.from(result.data);
+      _users.sort((a, b) {
+        final Map<String, int> roleWeight = {
+          'director_admin': 3,
+          'admin': 2,
+          'user': 1,
+        };
+        final roleA = a['role'] ?? 'user';
+        final roleB = b['role'] ?? 'user';
+        final weightA = roleWeight[roleA] ?? 0;
+        final weightB = roleWeight[roleB] ?? 0;
+        
+        if (weightA != weightB) {
+          return weightB.compareTo(weightA);
+        }
+        
+        final nameA = (a['name'] ?? '').toString().toLowerCase();
+        final nameB = (b['name'] ?? '').toString().toLowerCase();
+        return nameA.compareTo(nameB);
+      });
     } else {
       _errorMessage = result.message;
     }
@@ -186,10 +203,15 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
                     subtitle: Text(user['email'] ?? ''),
                     trailing: !canEdit ? null : PopupMenuButton<String>(
                       onSelected: (val) {
-                        if (val == 'role') _toggleRole(user['id'], user['role']);
-                        else if (val == 'ban') _toggleBan(user['id'], user['is_banned']);
-                        else if (val == 'delete') _deleteUser(user['id'], user['name']);
-                        else if (val == 'transfer') _transferDirector(user['id'], user['name']);
+                        if (val == 'role') {
+                          _toggleRole(user['id'], user['role']);
+                        } else if (val == 'ban') {
+                          _toggleBan(user['id'], user['is_banned']);
+                        } else if (val == 'delete') {
+                          _deleteUser(user['id'], user['name']);
+                        } else if (val == 'transfer') {
+                          _transferDirector(user['id'], user['name']);
+                        }
                       },
                       itemBuilder: (ctx) => [
                         if (iAmDirector && isAdmin)
@@ -230,7 +252,7 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
                           child: Row(
                             children: [
                               Icon(Icons.delete_forever, color: Colors.red, size: 20),
-                              const SizedBox(width: 8),
+                              SizedBox(width: 8),
                               Text('Xóa vĩnh viễn', style: TextStyle(color: Colors.red)),
                             ],
                           ),

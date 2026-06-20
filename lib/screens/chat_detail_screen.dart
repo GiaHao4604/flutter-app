@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_application_1/models/chat_models.dart';
 import 'package:flutter_application_1/services/chat_api_service.dart';
+import 'package:flutter_application_1/services/post_api_service.dart';
 import 'package:flutter_application_1/services/socket_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -17,6 +19,7 @@ class ChatDetailScreen extends StatefulWidget {
     required this.recipientName,
     this.recipientAvatarUrl,
     this.initialMessage,
+    this.sharedPostId,
   });
 
   final int currentUserId;
@@ -25,6 +28,7 @@ class ChatDetailScreen extends StatefulWidget {
   final String recipientName;
   final String? recipientAvatarUrl;
   final String? initialMessage;
+  final int? sharedPostId;
 
   @override
   State<ChatDetailScreen> createState() => _ChatDetailScreenState();
@@ -35,6 +39,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final SocketService _socketService = SocketService();
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final FocusNode _focusNode = FocusNode();
 
   List<ChatMessage> _messages = [];
   bool _isLoading = true;
@@ -44,6 +49,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   StreamSubscription<Map<String, dynamic>>? _messageSub;
   StreamSubscription<Map<String, dynamic>>? _typingSub;
   StreamSubscription<Map<String, dynamic>>? _presenceSub;
+  StreamSubscription<Map<String, dynamic>>? _messageDeletedSub;
+  ChatMessage? _replyingToMessage;
 
   @override
   void initState() {
@@ -54,6 +61,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
     _initializeChat();
     _messageController.addListener(_onTextChanged);
+    // Auto-gửi bài viết chia sẻ ngay khi mở chat
+    if (widget.sharedPostId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _sendMessage(sharedPostId: widget.sharedPostId);
+      });
+    }
   }
 
   @override
@@ -61,8 +74,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _messageSub?.cancel();
     _typingSub?.cancel();
     _presenceSub?.cancel();
+    _messageDeletedSub?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -118,6 +133,18 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           final alreadyExists = _messages.any((m) => m.id == message.id);
           if (!alreadyExists) {
             setState(() {
+              if (message.isMe) {
+                final tempIndex = _messages.indexWhere((m) => 
+                  m.isMe && 
+                  m.status == 'sending' && 
+                  m.text == message.text && 
+                  m.imageUrl == message.imageUrl &&
+                  m.replyTo?.id == message.replyTo?.id
+                );
+                if (tempIndex != -1) {
+                  _messages.removeAt(tempIndex);
+                }
+              }
               _messages.add(message);
             });
             _scrollToBottom();
@@ -155,6 +182,32 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (event['status'] == 'disconnected') {
         setState(() {
           _statusText = 'Offline';
+        });
+      }
+    });
+
+    _messageDeletedSub = _socketService.onMessageDeleted.listen((event) {
+      final messageId = int.tryParse(event['message_id']?.toString() ?? '') ?? 0;
+      if (messageId > 0) {
+        setState(() {
+          final index = _messages.indexWhere((m) => m.id == messageId);
+          if (index != -1) {
+            final old = _messages[index];
+            _messages[index] = ChatMessage(
+              id: old.id,
+              conversationId: old.conversationId,
+              senderId: old.senderId,
+              text: null,
+              imageUrl: null,
+              sharedPost: null,
+              isSeen: old.isSeen,
+              createdAt: old.createdAt,
+              isMe: old.isMe,
+              status: old.status,
+              isDeleted: true,
+              replyTo: old.replyTo,
+            );
+          }
         });
       }
     });
@@ -205,20 +258,67 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
   }
 
-  Future<void> _sendMessage({String? imageUrl}) async {
-    final text = _messageController.text.trim();
-    if (text.isEmpty && (imageUrl == null || imageUrl.isEmpty)) return;
+  Future<void> _sendMessage({String? imageUrl, int? sharedPostId, bool includeText = true}) async {
+    final text = includeText ? _messageController.text.trim() : '';
+    if (text.isEmpty && (imageUrl == null || imageUrl.isEmpty) && sharedPostId == null) return;
+
+    final currentReplyTo = _replyingToMessage;
+    final tempId = DateTime.now().millisecondsSinceEpoch;
+    final tempMessage = ChatMessage(
+      id: tempId,
+      conversationId: _conversationId ?? 0,
+      senderId: widget.currentUserId,
+      text: text.isNotEmpty ? text : null,
+      imageUrl: imageUrl,
+      isSeen: false,
+      createdAt: DateTime.now(),
+      isMe: true,
+      status: 'sending',
+      replyTo: currentReplyTo != null ? ReplyToMessage(
+        id: currentReplyTo.id, 
+        text: currentReplyTo.previewText, 
+        senderName: currentReplyTo.isMe ? 'Bạn' : widget.recipientName,
+      ) : null,
+    );
+
+    setState(() {
+      _messages.add(tempMessage);
+      if (includeText) {
+        _replyingToMessage = null;
+      }
+    });
+    if (includeText) {
+      _messageController.clear();
+    }
+    _scrollToBottom();
 
     final result = await _apiService.sendMessage(
       conversationId: _conversationId,
       recipientId: widget.recipientId,
       message: text.isNotEmpty ? text : null,
       imageUrl: imageUrl,
+      sharedPostId: sharedPostId,
+      replyToId: currentReplyTo?.id,
     );
 
     if (!mounted) return;
     if (!result.success) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.message)));
+      setState(() {
+        final index = _messages.indexWhere((m) => m.id == tempId);
+        if (index != -1) {
+          _messages[index] = ChatMessage(
+            id: tempId,
+            conversationId: tempMessage.conversationId,
+            senderId: tempMessage.senderId,
+            text: tempMessage.text,
+            imageUrl: tempMessage.imageUrl,
+            isSeen: tempMessage.isSeen,
+            createdAt: tempMessage.createdAt,
+            isMe: tempMessage.isMe,
+            status: 'failed',
+          );
+        }
+      });
       return;
     }
 
@@ -237,19 +337,20 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       final messageData = data['message'];
       if (messageData is Map<String, dynamic>) {
         final message = ChatMessage.fromJson(messageData, widget.currentUserId);
-        final alreadyExists = _messages.any((m) => m.id == message.id);
-        if (!alreadyExists) {
-          setState(() {
+        setState(() {
+          _messages.removeWhere((m) => m.id == tempId);
+          final alreadyExists = _messages.any((m) => m.id == message.id);
+          if (!alreadyExists) {
             _messages.add(message);
-          });
-          _scrollToBottom();
-        }
-        _messageController.clear();
+          }
+        });
+        _scrollToBottom();
       }
     }
   }
 
   Future<void> _pickImage() async {
+    FocusScope.of(context).unfocus();
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
     if (picked == null) return;
@@ -260,13 +361,20 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(uploadResult.message)));
       return;
     }
-    final imageUrl = uploadResult.data?['image_url']?.toString();
+    final data = uploadResult.data;
+    String? imageUrl = (data?['image_url'] ?? data?['imageUrl'])?.toString();
+    if (imageUrl == null && data?['data'] is Map) {
+      final innerData = data!['data'] as Map;
+      imageUrl = (innerData['image_url'] ?? innerData['imageUrl'])?.toString();
+    }
+    
     if (imageUrl != null && imageUrl.isNotEmpty) {
-      await _sendMessage(imageUrl: imageUrl);
+      await _sendMessage(imageUrl: imageUrl, includeText: false);
     }
   }
 
   void _showEmojiSheet() {
+    FocusScope.of(context).unfocus();
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF111111),
@@ -300,35 +408,213 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     );
   }
 
-  Widget _buildBubble(ChatMessage message) {
-    final isMe = message.isMe;
-    final bubbleColor = isMe ? const Color(0xFF5B4BFF) : const Color(0xFF1D1D1D);
-    final textColor = Colors.white;
+  Widget _buildContextMenuItem({
+    required String title, 
+    required IconData icon, 
+    required VoidCallback onTap, 
+    bool isDestructive = false
+  }) {
+    final color = isDestructive ? const Color(0xFFFF3B30) : Colors.white;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(title, style: GoogleFonts.manrope(color: color, fontSize: 17)),
+            Icon(icon, color: color, size: 22),
+          ],
+        ),
+      ),
+    );
+  }
 
-    return Align(
-      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 6),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: bubbleColor,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(18),
-              topRight: const Radius.circular(18),
-              bottomLeft: Radius.circular(isMe ? 18 : 4),
-              bottomRight: Radius.circular(isMe ? 4 : 18),
+  void _showOverlayMenu(ChatMessage message, Rect rect, Widget bubbleWidget) {
+    if (message.isDeleted) return;
+
+    Navigator.of(context).push(PageRouteBuilder(
+      opaque: false,
+      barrierDismissible: true,
+      barrierColor: Colors.transparent,
+      pageBuilder: (overlayContext, animation, secondaryAnimation) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        final screenWidth = MediaQuery.of(context).size.width;
+        // Chiều cao menu ước tính khoảng 110px
+        final showAbove = rect.bottom > screenHeight - 150;
+
+        return FadeTransition(
+          opacity: animation,
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Stack(
+              children: [
+                // 1. Lớp nền làm mờ (Blur)
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: () {
+                      Navigator.pop(overlayContext);
+                      _focusNode.unfocus();
+                    },
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                      child: Container(color: Colors.black.withOpacity(0.3)),
+                    ),
+                  ),
+                ),
+                // 2. Bong bóng chat bật ra nguyên vị trí
+                Positioned(
+                  top: rect.top,
+                  left: rect.left,
+                  width: rect.width,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: bubbleWidget,
+                  ),
+                ),
+                // 3. Menu tuỳ chọn
+                Positioned(
+                  top: showAbove ? null : rect.bottom + 8,
+                  bottom: showAbove ? screenHeight - rect.top + 8 : null,
+                  left: message.isMe ? null : rect.left,
+                  right: message.isMe ? screenWidth - rect.right : null,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: Container(
+                      width: 250,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1C1E),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildContextMenuItem(
+                            title: 'Trả lời',
+                            icon: Icons.reply_rounded,
+                            onTap: () {
+                              Navigator.pop(overlayContext);
+                              setState(() {
+                                _replyingToMessage = message;
+                              });
+                              _focusNode.requestFocus();
+                            },
+                          ),
+                          if (message.isMe) ...[
+                            const Divider(height: 1, color: Colors.white12),
+                            _buildContextMenuItem(
+                              title: 'Xóa',
+                              icon: Icons.delete_outline_rounded,
+                              isDestructive: true,
+                              onTap: () async {
+                                Navigator.pop(overlayContext);
+                                _focusNode.unfocus();
+                                final res = await _apiService.deleteMessage(message.id);
+                                if (res.success) {
+                                  setState(() {
+                                    final index = _messages.indexWhere((m) => m.id == message.id);
+                                    if (index != -1) {
+                                      final old = _messages[index];
+                                      _messages[index] = ChatMessage(
+                                        id: old.id,
+                                        conversationId: old.conversationId,
+                                        senderId: old.senderId,
+                                        text: null,
+                                        imageUrl: null,
+                                        sharedPost: null,
+                                        isSeen: old.isSeen,
+                                        createdAt: old.createdAt,
+                                        isMe: old.isMe,
+                                        status: old.status,
+                                        isDeleted: true,
+                                        replyTo: old.replyTo,
+                                      );
+                                    }
+                                  });
+                                } else {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.message)));
+                                  }
+                                }
+                              },
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (message.imageUrl != null && message.imageUrl!.isNotEmpty)
-                ClipRRect(
+        );
+      },
+    ));
+  }
+
+  Widget _buildBubble(ChatMessage message) {
+    final isMe = message.isMe;
+    final bubbleColor = message.isDeleted ? const Color(0xFF2A2A2A) : (isMe ? Colors.white : const Color(0xFF1D1D1D));
+    final textColor = message.isDeleted ? Colors.white54 : (isMe ? Colors.black : Colors.white);
+    final isFailed = message.status == 'failed';
+    final isLastMessage = _messages.isNotEmpty && _messages.last.id == message.id;
+
+    final hasSharedPost = !message.isDeleted && message.sharedPost != null;
+    final hasText = !message.isDeleted && message.text != null && message.text!.isNotEmpty;
+    final hasImage = !message.isDeleted && message.imageUrl != null && message.imageUrl!.isNotEmpty;
+    final hasReply = !message.isDeleted && message.replyTo != null;
+
+    final bubbleContent = Column(
+      crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+              if (hasReply) ...[
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4, left: 8, right: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.reply_rounded, color: Colors.white54, size: 14),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          isMe 
+                            ? 'Bạn đã trả lời ${message.replyTo!.senderName == 'Bạn' ? 'chính mình' : message.replyTo!.senderName}'
+                            : '${widget.recipientName} đã trả lời ${message.replyTo!.senderName == widget.recipientName ? 'chính mình' : 'bạn'}',
+                          style: GoogleFonts.manrope(color: Colors.white54, fontSize: 13),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  margin: const EdgeInsets.only(bottom: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF222222),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Text(
+                    message.replyTo!.text,
+                    style: GoogleFonts.manrope(color: Colors.white60, fontSize: 14),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+              if (hasSharedPost) ...[
+              _buildSharedPostCard(message.sharedPost!, isMe, message.createdAt),
+              if (hasText || hasImage) const SizedBox(height: 4),
+            ],
+            if (hasImage)
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 2),
+                child: ClipRRect(
                   borderRadius: BorderRadius.circular(14),
                   child: Image.network(
-                    message.imageUrl!,
+                    PostApiService.resolveMediaUrl(message.imageUrl!),
                     fit: BoxFit.cover,
                     cacheWidth: 800,
                     loadingBuilder: (context, child, loadingProgress) {
@@ -348,30 +634,195 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     },
                   ),
                 ),
-              if (message.imageUrl != null && message.imageUrl!.isNotEmpty)
-                const SizedBox(height: 10),
-              if (message.text != null && message.text!.isNotEmpty)
-                Text(
-                  message.text!,
-                  style: GoogleFonts.manrope(color: textColor, fontSize: 15, height: 1.4),
-                ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _formatTime(message.createdAt),
-                    style: GoogleFonts.manrope(color: Colors.white70, fontSize: 11),
-                  ),
-                  if (isMe) ...[
-                    const SizedBox(width: 8),
-                    Text(
-                      message.status == 'seen' ? 'Đã xem' : 'Đã gửi',
-                      style: GoogleFonts.manrope(color: Colors.white54, fontSize: 11),
-                    ),
-                  ],
-                ],
               ),
+            if (hasText || message.isDeleted)
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: bubbleColor,
+                  border: isFailed ? Border.all(color: Colors.redAccent, width: 1.5) : null,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  message.isDeleted ? 'Tin nhắn đã thu hồi' : message.text!,
+                  style: GoogleFonts.manrope(
+                    color: textColor, 
+                    fontSize: 15, 
+                    height: 1.4,
+                    fontStyle: message.isDeleted ? FontStyle.italic : null,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _formatTime(message.createdAt),
+                  style: GoogleFonts.manrope(color: Colors.white70, fontSize: 11),
+                ),
+                if (isFailed) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    'Gửi thất bại',
+                    style: GoogleFonts.manrope(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                ] else if (isMe && isLastMessage && message.status != 'sending') ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    message.status == 'seen' || message.isSeen ? 'Đã xem' : 'Đã gửi',
+                    style: GoogleFonts.manrope(color: Colors.white54, fontSize: 11),
+                  ),
+                ],
+              ],
+            ),
+      ],
+    );
+
+    return Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
+        child: Builder(
+          builder: (context) {
+            return GestureDetector(
+              onLongPress: () {
+                if (message.isDeleted || isFailed || message.status == 'sending') return;
+                final renderBox = context.findRenderObject() as RenderBox?;
+                if (renderBox != null) {
+                  final offset = renderBox.localToGlobal(Offset.zero);
+                  final rect = offset & renderBox.size;
+                  _showOverlayMenu(message, rect, bubbleContent);
+                }
+              },
+              child: bubbleContent,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSharedPostCard(SharedPost post, bool isMe, DateTime messageCreatedAt) {
+    final hasImage = post.imageUrl != null && post.imageUrl!.isNotEmpty;
+    // authorId of the post vs currentUserId
+    final authorName = (post.authorId == widget.currentUserId) ? "You" : (post.authorName ?? 'Người dùng');
+    
+    // Format date as "4 thg 6" using the post's createdAt, fallback to messageCreatedAt
+    final postDate = post.createdAt ?? messageCreatedAt;
+    final dateLabel = '${postDate.day} thg ${postDate.month}';
+    
+    return GestureDetector(
+      onTap: () {},
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(32),
+        child: Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(minHeight: 120),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.1),
+          ),
+          child: Stack(
+            children: [
+              // Ảnh nền
+              if (hasImage)
+                AspectRatio(
+                  aspectRatio: 1.0,
+                  child: Image.network(
+                    PostApiService.resolveMediaUrl(post.imageUrl!),
+                    fit: BoxFit.cover,
+                    errorBuilder: (ctx, _, _) => Container(
+                      color: Colors.white10,
+                      child: const Center(child: Icon(Icons.broken_image_outlined, color: Colors.white38, size: 40)),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  height: 160,
+                  color: Colors.white10,
+                  child: const Center(child: Icon(Icons.image_not_supported_outlined, color: Colors.white38, size: 32)),
+                ),
+              
+              // Top-Left Pill Overlay
+              Positioned(
+                top: 12,
+                left: 12,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.3),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(
+                            radius: 10,
+                            backgroundImage: (post.authorAvatar != null && post.authorAvatar!.isNotEmpty)
+                                ? NetworkImage(PostApiService.resolveMediaUrl(post.authorAvatar!))
+                                : null,
+                            backgroundColor: Colors.white24,
+                            child: (post.authorAvatar == null || post.authorAvatar!.isEmpty)
+                                ? const Icon(Icons.person, size: 10, color: Colors.white70)
+                                : null,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            authorName,
+                            style: GoogleFonts.manrope(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            dateLabel,
+                            style: GoogleFonts.manrope(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              // Bottom Center Caption Overlay
+              if (post.caption != null && post.caption!.isNotEmpty)
+                Positioned(
+                  bottom: 16,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.5),
+                          ),
+                          child: Text(
+                            post.caption!,
+                            style: GoogleFonts.manrope(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
@@ -381,9 +832,16 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   String _formatTime(DateTime dateTime) {
     final localTime = dateTime.toLocal();
+    final now = DateTime.now();
+
     final hours = localTime.hour.toString().padLeft(2, '0');
     final minutes = localTime.minute.toString().padLeft(2, '0');
-    return '$hours:$minutes';
+
+    if (localTime.year == now.year && localTime.month == now.month && localTime.day == now.day) {
+      return '$hours:$minutes';
+    } else {
+      return '$hours:$minutes, ${localTime.day} THG ${localTime.month}';
+    }
   }
 
   @override
@@ -400,7 +858,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               radius: 18,
               backgroundColor: const Color(0xFF222222),
               backgroundImage: widget.recipientAvatarUrl != null
-                  ? NetworkImage(widget.recipientAvatarUrl!)
+                  ? NetworkImage(PostApiService.resolveMediaUrl(widget.recipientAvatarUrl!))
                   : null,
               child: widget.recipientAvatarUrl == null
                   ? Text(
@@ -436,8 +894,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           ],
         ),
       ),
-      body: Column(
-        children: [
+      body: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: Column(
+          children: [
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator(color: Colors.white))
@@ -470,8 +930,53 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           Container(
             color: const Color(0xFF111111),
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 16),
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
+                if (_replyingToMessage != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1B1B1B),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.reply, color: Colors.white54, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Đang trả lời ${_replyingToMessage!.isMe ? 'chính mình' : widget.recipientName}',
+                                style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _replyingToMessage!.previewText,
+                                style: GoogleFonts.manrope(color: Colors.white54, fontSize: 13),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _replyingToMessage = null;
+                            });
+                          },
+                          child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        ),
+                      ],
+                    ),
+                  ),
+                Row(
+                  children: [
                 IconButton(
                   onPressed: _showEmojiSheet,
                   icon: const Icon(Icons.emoji_emotions_outlined, color: Colors.white70),
@@ -484,6 +989,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 Expanded(
                   child: TextField(
                     controller: _messageController,
+                    focusNode: _focusNode,
                     minLines: 1,
                     maxLines: 4,
                     style: GoogleFonts.manrope(color: Colors.white),
@@ -515,8 +1021,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
+      ),
+          ],
+        ),
       ),
     );
   }

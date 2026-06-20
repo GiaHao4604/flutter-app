@@ -10,16 +10,40 @@ function normalizeUser(row) {
 }
 
 function normalizeMessage(row, currentUserId) {
+  let sharedPost = null;
+  if (row.shared_post_id) {
+    sharedPost = {
+      id: row.shared_post_id,
+      image_url: row.post_image_url || null,
+      caption: row.post_caption || null,
+      author_id: row.post_author_id || null,
+      author_name: row.post_author_name || null,
+      author_avatar: row.post_author_avatar || null,
+      created_at: row.post_created_at || null,
+    };
+  }
+  let replyTo = null;
+  if (row.reply_to_id) {
+    replyTo = {
+      id: row.reply_to_id,
+      text: row.reply_is_deleted ? 'Tin nhắn đã thu hồi' : (row.reply_to_text || (row.reply_to_image ? '[Hình ảnh]' : (row.reply_shared_post_id ? '[Bài viết]' : ''))),
+      sender_name: row.reply_sender_name || 'Người dùng',
+    };
+  }
+
   return {
     id: row.id,
     conversation_id: row.conversation_id,
     sender_id: row.sender_id,
-    text: row.message || null,
-    image_url: row.image_url || null,
+    text: row.is_deleted ? null : (row.message || null),
+    image_url: row.is_deleted ? null : (row.image_url || null),
+    shared_post: row.is_deleted ? null : sharedPost,
     is_seen: !!row.is_seen,
     created_at: row.created_at,
     is_me: row.sender_id === currentUserId,
     status: row.sender_id === currentUserId ? (row.is_seen ? 'seen' : 'delivered') : null,
+    is_deleted: !!row.is_deleted,
+    reply_to: replyTo,
   };
 }
 
@@ -86,9 +110,25 @@ async function getMessages(req, res) {
     }
 
     const [messages] = await pool.query(
-      `SELECT m.*, u.name AS sender_name, u.avatar_url AS sender_avatar
+      `SELECT m.*,
+              u.name AS sender_name, u.avatar_url AS sender_avatar,
+              p.image_url AS post_image_url,
+              p.caption AS post_caption,
+              p.user_id AS post_author_id,
+              p.created_at AS post_created_at,
+              pa.name AS post_author_name,
+              pa.avatar_url AS post_author_avatar,
+              r.message AS reply_to_text,
+              r.image_url AS reply_to_image,
+              r.shared_post_id AS reply_shared_post_id,
+              r.is_deleted AS reply_is_deleted,
+              ru.name AS reply_sender_name
        FROM messages m
        JOIN users u ON u.id = m.sender_id
+       LEFT JOIN posts p ON p.id = m.shared_post_id
+       LEFT JOIN users pa ON pa.id = p.user_id
+       LEFT JOIN messages r ON r.id = m.reply_to_id
+       LEFT JOIN users ru ON ru.id = r.sender_id
        WHERE m.conversation_id = ?
        ORDER BY m.created_at ASC`,
       [conversationId],
@@ -108,9 +148,11 @@ async function getMessages(req, res) {
 async function sendMessage(req, res) {
   try {
     const currentUserId = Number(req.user?.sub);
-    const { conversation_id, recipient_id, message, image_url } = req.body;
+    const { conversation_id, recipient_id, message, image_url, shared_post_id, reply_to_id } = req.body;
     const textMessage = String(message || '').trim();
     const imageUrl = String(image_url || '').trim() || null;
+    const sharedPostId = shared_post_id ? Number(shared_post_id) : null;
+    const replyToId = reply_to_id ? Number(reply_to_id) : null;
 
     if (!conversation_id && !recipient_id) {
       return res.status(400).json({ success: false, message: 'conversation_id hoặc recipient_id bắt buộc' });
@@ -133,12 +175,25 @@ async function sendMessage(req, res) {
         return res.status(404).json({ success: false, message: 'Người nhận không tồn tại' });
       }
 
-      const [createdConversation] = await pool.query('INSERT INTO conversations () VALUES ()');
-      conversationId = createdConversation.insertId;
-      await pool.query(
-        'INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?), (?, ?)',
-        [conversationId, currentUserId, conversationId, recipientId],
+      // Kiểm tra nếu đã có cuộc trò chuyện 1-1 với recipient_id
+      const [existingConv] = await pool.query(
+        `SELECT cm1.conversation_id FROM conversation_members cm1
+         JOIN conversation_members cm2 ON cm2.conversation_id = cm1.conversation_id
+         WHERE cm1.user_id = ? AND cm2.user_id = ?
+         LIMIT 1`,
+        [currentUserId, recipientId]
       );
+
+      if (existingConv.length > 0) {
+        conversationId = existingConv[0].conversation_id;
+      } else {
+        const [createdConversation] = await pool.query('INSERT INTO conversations () VALUES ()');
+        conversationId = createdConversation.insertId;
+        await pool.query(
+          'INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?), (?, ?)',
+          [conversationId, currentUserId, conversationId, recipientId],
+        );
+      }
     } else {
       const [members] = await pool.query(
         'SELECT id FROM conversation_members WHERE conversation_id = ? AND user_id = ? LIMIT 1',
@@ -157,16 +212,36 @@ async function sendMessage(req, res) {
       }
     }
 
-    if (!textMessage && !imageUrl) {
+    if (!textMessage && !imageUrl && !sharedPostId) {
       return res.status(400).json({ success: false, message: 'Tin nhắn trống' });
     }
 
     const [result] = await pool.query(
-      'INSERT INTO messages (conversation_id, sender_id, message, image_url) VALUES (?, ?, ?, ?)',
-      [conversationId, currentUserId, textMessage || null, imageUrl],
+      'INSERT INTO messages (conversation_id, sender_id, message, image_url, shared_post_id, reply_to_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [conversationId, currentUserId, textMessage || null, imageUrl, sharedPostId, replyToId],
     );
 
-    const [savedRows] = await pool.query('SELECT * FROM messages WHERE id = ? LIMIT 1', [result.insertId]);
+    const [savedRows] = await pool.query(
+      `SELECT m.*,
+              p.image_url AS post_image_url,
+              p.caption AS post_caption,
+              p.user_id AS post_author_id,
+              p.created_at AS post_created_at,
+              pa.name AS post_author_name,
+              pa.avatar_url AS post_author_avatar,
+              r.message AS reply_to_text,
+              r.image_url AS reply_to_image,
+              r.shared_post_id AS reply_shared_post_id,
+              r.is_deleted AS reply_is_deleted,
+              ru.name AS reply_sender_name
+       FROM messages m
+       LEFT JOIN posts p ON p.id = m.shared_post_id
+       LEFT JOIN users pa ON pa.id = p.user_id
+       LEFT JOIN messages r ON r.id = m.reply_to_id
+       LEFT JOIN users ru ON ru.id = r.sender_id
+       WHERE m.id = ? LIMIT 1`,
+      [result.insertId]
+    );
     const savedMessage = savedRows[0];
 
     const messagePayload = normalizeMessage(savedMessage, currentUserId);
@@ -183,19 +258,50 @@ async function sendMessage(req, res) {
       });
     }
 
-    return res.status(201).json({
-      success: true,
-      message: 'Tin nhắn đã gửi',
-      data: {
-        conversation_id: conversationId,
-        message: messagePayload,
-      },
-    });
+    return res.json({ success: true, message: 'Message sent', data: messagePayload });
   } catch (error) {
     console.error('sendMessage error:', error);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 }
+
+async function deleteMessage(req, res) {
+  try {
+    const currentUserId = Number(req.user?.sub);
+    const messageId = Number(req.params.messageId);
+
+    if (!Number.isInteger(messageId) || messageId <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid message ID' });
+    }
+
+    const [msgs] = await pool.query('SELECT conversation_id, sender_id FROM messages WHERE id = ? LIMIT 1', [messageId]);
+    if (msgs.length === 0) {
+      return res.status(404).json({ success: false, message: 'Message not found' });
+    }
+
+    const msg = msgs[0];
+    if (msg.sender_id !== currentUserId) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền thu hồi tin nhắn này' });
+    }
+
+    await pool.query(
+      'UPDATE messages SET is_deleted = 1, message = NULL, image_url = NULL, shared_post_id = NULL WHERE id = ?',
+      [messageId]
+    );
+
+    const io = require('../utils/socket').getIO();
+    io.to(`conversation_${msg.conversation_id}`).emit('message_deleted', {
+      conversation_id: msg.conversation_id,
+      message_id: messageId,
+    });
+
+    return res.json({ success: true, message: 'Message deleted successfully' });
+  } catch (error) {
+    console.error('deleteMessage error:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+}
+
 
 async function markMessagesSeen(req, res) {
   try {
@@ -276,4 +382,5 @@ module.exports = {
   markMessagesSeen,
   uploadMessageImage,
   searchUsers,
+  deleteMessage,
 };

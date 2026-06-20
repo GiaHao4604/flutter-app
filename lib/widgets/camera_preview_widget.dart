@@ -16,6 +16,7 @@ import 'package:flutter_application_1/services/auth_session_service.dart';
 import 'package:flutter_application_1/services/calendar_api_service.dart';
 import 'package:flutter_application_1/services/calendar_refresh_notifier.dart';
 import 'package:flutter_application_1/services/calendar_storage_service.dart';
+import '../services/api_config.dart';
 
 class CameraPreviewWidget extends StatefulWidget {
   const CameraPreviewWidget({
@@ -235,7 +236,7 @@ class CameraPreviewWidgetState
       });
 
       var uri = Uri.parse(
-        'http://192.168.1.240:3000/api/posts/upload',
+        ApiConfig.apiUrl('posts/upload'),
       );
 
       var request = http.MultipartRequest(

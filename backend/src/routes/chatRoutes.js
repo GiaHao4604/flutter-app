@@ -9,6 +9,7 @@ const {
   markMessagesSeen,
   uploadMessageImage,
   searchUsers,
+  deleteMessage,
 } = require('../controllers/chatController');
 
 router.use(authMiddleware);
@@ -17,6 +18,7 @@ router.get('/conversations', getConversations);
 router.get('/users/search', searchUsers);
 router.get('/messages/:conversationId', getMessages);
 router.post('/messages', sendMessage);
+router.delete('/messages/:messageId', deleteMessage);
 router.put('/messages/seen', markMessagesSeen);
 router.post('/messages/image', uploadChatImageMiddleware.single('image'), uploadMessageImage);
 

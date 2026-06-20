@@ -80,6 +80,7 @@ class PostApiService {
     required String caption,
     String? deviceId,
     String? cameraType,
+    int? calendarEntryId,
   }) async {
     try {
       final streamResponse = await _runWithBaseUrlFallback((baseUrl) async {
@@ -99,6 +100,9 @@ class PostApiService {
         if (cameraType != null && cameraType.trim().isNotEmpty) {
           request.fields['camera_type'] = cameraType.trim();
         }
+        if (calendarEntryId != null) {
+          request.fields['calendar_entry_id'] = calendarEntryId.toString();
+        }
 
         return request.send().timeout(const Duration(seconds: 30));
       });
@@ -109,6 +113,106 @@ class PostApiService {
       return PostApiResult(
         success: false,
         message: _buildLocalServerErrorMessage(error, action: 'upload bài viết'),
+        statusCode: 0,
+      );
+    }
+  }
+
+  Future<PostApiResult> reportPost({
+    required String token,
+    required int postId,
+    required String reason,
+  }) async {
+    try {
+      final response = await _runWithBaseUrlFallback((baseUrl) {
+        return http.post(
+          Uri.parse('$baseUrl/$postId/report'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({'reason': reason}),
+        ).timeout(const Duration(seconds: 10));
+      });
+      return _decodeResponse(response.statusCode, response.body);
+    } catch (error) {
+      return PostApiResult(
+        success: false,
+        message: _buildLocalServerErrorMessage(error, action: 'báo cáo bài đăng'),
+        statusCode: 0,
+      );
+    }
+  }
+
+  Future<PostApiResult> reactPost({
+    required String token,
+    required int postId,
+    required String reactionIcon,
+  }) async {
+    try {
+      final response = await _runWithBaseUrlFallback((baseUrl) {
+        return http.post(
+          Uri.parse('$baseUrl/$postId/react'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({'reaction_icon': reactionIcon}),
+        ).timeout(const Duration(seconds: 10));
+      });
+      return _decodeResponse(response.statusCode, response.body);
+    } catch (error) {
+      return PostApiResult(
+        success: false,
+        message: _buildLocalServerErrorMessage(error, action: 'thả cảm xúc'),
+        statusCode: 0,
+      );
+    }
+  }
+
+  Future<PostApiResult> getPostReactions({
+    required String token,
+    required int postId,
+  }) async {
+    try {
+      final response = await _runWithBaseUrlFallback((baseUrl) {
+        return http.get(
+          Uri.parse('$baseUrl/$postId/reactions'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        ).timeout(const Duration(seconds: 10));
+      });
+      return _decodeResponse(response.statusCode, response.body);
+    } catch (error) {
+      return PostApiResult(
+        success: false,
+        message: _buildLocalServerErrorMessage(error, action: 'lấy danh sách cảm xúc'),
+        statusCode: 0,
+      );
+    }
+  }
+
+  Future<PostApiResult> deletePost({
+    required String token,
+    required int postId,
+  }) async {
+    try {
+      final response = await _runWithBaseUrlFallback((baseUrl) {
+        return http.delete(
+          Uri.parse('$baseUrl/$postId'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        ).timeout(const Duration(seconds: 10));
+      });
+      return _decodeResponse(response.statusCode, response.body);
+    } catch (error) {
+      return PostApiResult(
+        success: false,
+        message: _buildLocalServerErrorMessage(error, action: 'xóa bài đăng'),
         statusCode: 0,
       );
     }
@@ -128,7 +232,7 @@ class PostApiService {
                 'Authorization': 'Bearer $token',
               },
             )
-            .timeout(const Duration(seconds: 4));
+            .timeout(const Duration(seconds: 30));
       });
       return _decodeResponse(response.statusCode, response.body);
     } catch (error) {

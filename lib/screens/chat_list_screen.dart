@@ -5,26 +5,43 @@ import 'package:flutter_application_1/services/chat_api_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 class ChatListScreen extends StatefulWidget {
-  const ChatListScreen({super.key, required this.currentUserId});
+  const ChatListScreen({super.key, required this.currentUserId, this.onBack});
 
   final int currentUserId;
+  final VoidCallback? onBack;
 
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
 }
 
-class _ChatListScreenState extends State<ChatListScreen> {
+class _ChatListScreenState extends State<ChatListScreen> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   final ChatApiService _chatApiService = ChatApiService();
   List<ChatConversation> _conversations = [];
   bool _isLoading = true;
   String? _error;
+
+  final TextEditingController _searchController = TextEditingController();
+  List<Map<String, dynamic>> _searchResults = [];
+  bool _isSearchingUsers = false;
 
   String _formatDate(String isoString) {
     if (isoString.isEmpty) return '';
     final dt = DateTime.tryParse(isoString);
     if (dt == null) return isoString.replaceFirst('T', ' ').split('.').first;
     final localDt = dt.toLocal();
-    return '${localDt.hour.toString().padLeft(2, '0')}:${localDt.minute.toString().padLeft(2, '0')} ${localDt.day.toString().padLeft(2, '0')}/${localDt.month.toString().padLeft(2, '0')}';
+    final now = DateTime.now();
+
+    final hours = localDt.hour.toString().padLeft(2, '0');
+    final minutes = localDt.minute.toString().padLeft(2, '0');
+
+    if (localDt.year == now.year && localDt.month == now.month && localDt.day == now.day) {
+      return '$hours:$minutes';
+    } else {
+      return '$hours:$minutes, ${localDt.day} THG ${localDt.month}';
+    }
   }
 
   @override
@@ -81,6 +98,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return Scaffold(
       backgroundColor: const Color(0xFF080808),
       body: SafeArea(
@@ -98,173 +116,68 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
-  Widget _buildHeader() {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            'Tin nhắn',
-            style: GoogleFonts.manrope(
-              color: Colors.white,
-              fontSize: 28,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ),
-        GestureDetector(
-          onTap: _showNewChatDialog,
-          child: Container(
-            width: 40,
-            height: 40,
-            margin: const EdgeInsets.only(right: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF5B4BFF),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(Icons.edit_rounded, color: Colors.white, size: 20),
-          ),
-        ),
-        GestureDetector(
-          onTap: _loadConversations,
-          child: const Icon(Icons.refresh, color: Colors.white),
-        ),
-      ],
-    );
+  Future<void> _doSearch(String query) async {
+    if (query.trim().length < 2) {
+      setState(() {
+        _searchResults = [];
+        _isSearchingUsers = false;
+      });
+      return;
+    }
+    setState(() => _isSearchingUsers = true);
+    final result = await _chatApiService.searchUsers(query.trim());
+    final items = <Map<String, dynamic>>[];
+    if (result.success && result.data is List) {
+      for (final item in result.data) {
+        if (item is Map<String, dynamic>) items.add(item);
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _searchResults = items;
+      _isSearchingUsers = false;
+    });
   }
 
-  void _showNewChatDialog() {
-    final searchController = TextEditingController();
-    List<Map<String, dynamic>> searchResults = [];
-    bool isSearching = false;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF111111),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            Future<void> doSearch(String query) async {
-              if (query.trim().length < 2) {
-                setSheetState(() {
-                  searchResults = [];
-                  isSearching = false;
-                });
-                return;
-              }
-              setSheetState(() => isSearching = true);
-              final result = await _chatApiService.searchUsers(query.trim());
-              final items = <Map<String, dynamic>>[];
-              if (result.success && result.data is List) {
-                for (final item in result.data) {
-                  if (item is Map<String, dynamic>) items.add(item);
-                }
-              }
-              setSheetState(() {
-                searchResults = items;
-                isSearching = false;
-              });
-            }
-
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
+  Widget _buildHeader() {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
+              onPressed: widget.onBack,
+            ),
+            Text(
+              'Chat - MoneyLife',
+              style: GoogleFonts.outfit(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
               ),
-              child: SizedBox(
-                height: MediaQuery.of(context).size.height * 0.75,
-                child: Column(
-                  children: [
-                    const SizedBox(height: 12),
-                    Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(
-                        'Tin nhắn mới',
-                        style: GoogleFonts.manrope(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: TextField(
-                        controller: searchController,
-                        autofocus: true,
-                        style: GoogleFonts.manrope(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: 'Tìm kiếm theo tên hoặc email...',
-                          hintStyle: GoogleFonts.manrope(color: Colors.white38),
-                          prefixIcon: const Icon(Icons.search, color: Colors.white54),
-                          filled: true,
-                          fillColor: const Color(0xFF1B1B1B),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
-                        onChanged: (val) => doSearch(val),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: isSearching
-                          ? const Center(child: CircularProgressIndicator(color: Colors.white))
-                          : searchResults.isEmpty
-                              ? Center(
-                                  child: Text(
-                                    'Nhập ít nhất 2 ký tự để tìm kiếm',
-                                    style: GoogleFonts.manrope(color: Colors.white38),
-                                  ),
-                                )
-                              : ListView.builder(
-                                  itemCount: searchResults.length,
-                                  itemBuilder: (_, i) {
-                                    final user = searchResults[i];
-                                    final userId = int.tryParse(user['id']?.toString() ?? '') ?? 0;
-                                    final name = user['name']?.toString() ?? 'Người dùng';
-                                    final avatarUrl = user['avatar_url']?.toString();
-                                    return ListTile(
-                                      leading: CircleAvatar(
-                                        radius: 22,
-                                        backgroundColor: const Color(0xFF222222),
-                                        backgroundImage: avatarUrl != null ? NetworkImage(avatarUrl) : null,
-                                        child: avatarUrl == null
-                                            ? Text(
-                                                name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                                                style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w700),
-                                              )
-                                            : null,
-                                      ),
-                                      title: Text(name, style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w600)),
-                                      onTap: () {
-                                        Navigator.pop(sheetContext);
-                                        _openNewConversation(userId, name, avatarUrl);
-                                      },
-                                    );
-                                  },
-                                ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _searchController,
+          style: GoogleFonts.manrope(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Tìm kiếm theo tên...',
+            hintStyle: GoogleFonts.manrope(color: Colors.white38),
+            prefixIcon: const Icon(Icons.search, color: Colors.white54),
+            filled: true,
+            fillColor: const Color(0xFF1B1B1B),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(24),
+              borderSide: BorderSide.none,
+            ),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          ),
+          onChanged: (val) => _doSearch(val),
+        ),
+      ],
     );
   }
 
@@ -284,6 +197,49 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
 
   Widget _buildBody() {
+    if (_searchController.text.trim().isNotEmpty) {
+      if (_isSearchingUsers) {
+        return const Center(child: CircularProgressIndicator(color: Colors.white));
+      }
+      if (_searchResults.isEmpty) {
+         return Center(
+            child: Text(
+              'Không tìm thấy kết quả',
+              style: GoogleFonts.manrope(color: Colors.white38),
+            ),
+          );
+      }
+      return ListView.builder(
+        itemCount: _searchResults.length,
+        itemBuilder: (_, i) {
+          final user = _searchResults[i];
+          final userId = int.tryParse(user['id']?.toString() ?? '') ?? 0;
+          final name = user['name']?.toString() ?? 'Người dùng';
+          final avatarUrl = user['avatar_url']?.toString();
+          return ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            leading: CircleAvatar(
+              radius: 22,
+              backgroundColor: const Color(0xFF222222),
+              backgroundImage: avatarUrl != null ? NetworkImage(avatarUrl) : null,
+              child: avatarUrl == null
+                  ? Text(
+                      name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                      style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w700),
+                    )
+                  : null,
+            ),
+            title: Text(name, style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w600)),
+            onTap: () {
+              FocusScope.of(context).unfocus();
+              _searchController.clear();
+              _openNewConversation(userId, name, avatarUrl);
+            },
+          );
+        },
+      );
+    }
+
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator(color: Colors.white));
     }
@@ -360,7 +316,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                               conversation.partner.name,
                               style: GoogleFonts.manrope(
                                 color: Colors.white,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: conversation.unreadCount > 0 ? FontWeight.w800 : FontWeight.w700,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -382,7 +338,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.manrope(
-                          color: const Color(0xA3FFFFFF),
+                          color: conversation.unreadCount > 0 ? Colors.white : const Color(0xA3FFFFFF),
+                          fontWeight: conversation.unreadCount > 0 ? FontWeight.w700 : FontWeight.w400,
                           fontSize: 13,
                         ),
                       ),

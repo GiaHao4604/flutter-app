@@ -23,6 +23,7 @@ router.post(
 router.patch('/categories/:id', [param('id').isInt({ min: 1 })], financeController.patchCategory);
 router.delete('/categories/:id', [param('id').isInt({ min: 1 })], financeController.deleteCategory);
 
+router.get('/budgets/history', financeController.getHistoryBudgets);
 router.get('/budgets', [query('monthKey').optional().isString()], financeController.getBudgets);
 router.post(
   '/budgets',

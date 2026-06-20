@@ -2,8 +2,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_application_1/services/auth_api_service.dart';
 import 'package:flutter_application_1/services/auth_session_service.dart';
+import 'package:flutter_application_1/services/notification_api_service.dart';
 import 'package:flutter_application_1/screens/budget.dart';
 import 'package:flutter_application_1/screens/statistics.dart';
+import 'package:flutter_application_1/screens/inbox_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -16,6 +18,7 @@ class Profile extends StatefulWidget {
   final ValueChanged<String> onNameChanged;
   final String userName;    // Nhận tên thật từ HomeScreen
   final String userEmail;   // Nhận email thật từ HomeScreen
+  final VoidCallback? onBack;
 
   const Profile({
     super.key,
@@ -26,16 +29,20 @@ class Profile extends StatefulWidget {
     required this.onNameChanged,
     required this.userName,
     required this.userEmail,
+    this.onBack,
   });
 
   @override
   State<Profile> createState() => _ProfileState();
 }
 
-class _ProfileState extends State<Profile> {
+class _ProfileState extends State<Profile> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
   String? _avatarUrl; // Lưu link ảnh mạng hiện tại để hiển thị trên giao diện
   String _displayName = '';
   bool _isUploading = false; // Trạng thái hiển thị vòng xoay chờ khi đang upload ảnh
+  int _unreadCount = 0;
   
   final ImagePicker _picker = ImagePicker();
   final AuthApiService _authApiService = AuthApiService();
@@ -46,6 +53,16 @@ class _ProfileState extends State<Profile> {
     super.initState();
     _avatarUrl = widget.currentImageUrl; // Khởi tạo bằng link ảnh hiện có từ server
     _displayName = widget.userName;
+    _fetchUnreadCount();
+  }
+
+  Future<void> _fetchUnreadCount() async {
+    final result = await NotificationApiService.getUnreadCount();
+    if (result.success && result.data != null && mounted) {
+      setState(() {
+        _unreadCount = result.data!;
+      });
+    }
   }
 
   void _showImageSourceActionSheet(BuildContext context) {
@@ -310,7 +327,7 @@ class _ProfileState extends State<Profile> {
           builder: (_, controller) {
             return Container(
               decoration: const BoxDecoration(
-                color: Color(0xFF161313),
+                color: Colors.white,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
               ),
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
@@ -321,7 +338,7 @@ class _ProfileState extends State<Profile> {
                     height: 6,
                     margin: const EdgeInsets.only(top: 6, bottom: 12),
                     decoration: BoxDecoration(
-                      color: Colors.white24,
+                      color: Colors.black12,
                       borderRadius: BorderRadius.circular(8),
                     ),
                   ),
@@ -331,32 +348,32 @@ class _ProfileState extends State<Profile> {
                       children: [
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          child: Text('Cài đặt tài khoản', style: GoogleFonts.manrope(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+                          child: Text('Cài đặt tài khoản', style: GoogleFonts.manrope(color: Colors.black, fontSize: 16, fontWeight: FontWeight.w700)),
                         ),
                         const SizedBox(height: 6),
                         ListTile(
                           leading: CircleAvatar(
                             radius: 20,
-                            backgroundColor: const Color(0xFF5B4BFF),
+                            backgroundColor: Colors.black,
                             child: const Icon(Icons.badge_outlined, color: Colors.white),
                           ),
-                          title: Text('Đổi tên', style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w600)),
+                          title: Text('Đổi tên', style: GoogleFonts.manrope(color: Colors.black, fontWeight: FontWeight.w600)),
           
-                          trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white38, size: 16),
+                          trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.black26, size: 16),
                           onTap: () {
                             Navigator.pop(sheetContext, 'rename');
                           },
                         ),
-                        const Divider(color: Colors.white12, height: 0),
+                        const Divider(color: Colors.black12, height: 0),
                         ListTile(
                           leading: CircleAvatar(
                             radius: 20,
-                            backgroundColor: const Color(0xFF00C896),
+                            backgroundColor: Colors.black,
                             child: const Icon(Icons.lock_outline_rounded, color: Colors.white),
                           ),
-                          title: Text('Đổi mật khẩu', style: GoogleFonts.manrope(color: Colors.white, fontWeight: FontWeight.w600)),
-                          subtitle: Text('Bảo mật tài khoản của bạn', style: GoogleFonts.manrope(color: Colors.white54, fontSize: 12)),
-                          trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white38, size: 16),
+                          title: Text('Đổi mật khẩu', style: GoogleFonts.manrope(color: Colors.black, fontWeight: FontWeight.w600)),
+                          subtitle: Text('Bảo mật tài khoản của bạn', style: GoogleFonts.manrope(color: Colors.black54, fontSize: 12)),
+                          trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.black26, size: 16),
                           onTap: () {
                             Navigator.pop(sheetContext, 'password');
                           },
@@ -384,17 +401,18 @@ class _ProfileState extends State<Profile> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final hasAvatar = _avatarUrl != null && _avatarUrl!.trim().isNotEmpty;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF080808),
+      backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
+        leading: widget.onBack != null ? IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20),
-          onPressed: () => Navigator.pop(context), 
-        ),
+          onPressed: widget.onBack, 
+        ) : null,
         title: Text(
           'Cài đặt',
           style: GoogleFonts.manrope(
@@ -421,8 +439,10 @@ class _ProfileState extends State<Profile> {
             Center(
               child: Column(
                 children: [
-                  GestureDetector(
-                    onTap: () => _showImageSourceActionSheet(context),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 3),
+                    child: GestureDetector(
+                      onTap: () => _showImageSourceActionSheet(context),
                     child: Stack(
                       children: [
                         Container(
@@ -482,6 +502,7 @@ class _ProfileState extends State<Profile> {
                       ],
                     ),
                   ),
+                ),
                   const SizedBox(height: 16),
                   
                   // ĐÃ SỬA: Hiển thị đúng tên động lấy từ Widget nhận từ HomeScreen
@@ -536,7 +557,33 @@ class _ProfileState extends State<Profile> {
                     );
                   },
                 ),
-                _buildMenuItem(icon: Icons.notifications_none_rounded, iconColor: Colors.white, title: 'Thông báo nhắc nhở', trailingText: 'Tắt', onTap: () => _showComingSoon('Thông báo nhắc nhở')),
+                _buildMenuItem(
+                  icon: Icons.inbox_rounded,
+                  iconColor: Colors.white,
+                  title: 'Hộp thư hệ thống',
+                  onTap: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const InboxScreen(),
+                      ),
+                    );
+                    _fetchUnreadCount(); // Refresh count when coming back
+                  },
+                  trailingWidget: _unreadCount > 0 
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            _unreadCount > 99 ? '99+' : '$_unreadCount',
+                            style: GoogleFonts.manrope(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        )
+                      : null,
+                ),
                 _buildMenuItem(icon: Icons.g_translate_rounded, iconColor: Colors.white, title: 'Ngôn ngữ hiển thị', trailingText: 'Tiếng Việt', onTap: () => _showComingSoon('Chọn ngôn ngữ')),
                 _buildMenuItem(icon: Icons.dark_mode_outlined, iconColor: Colors.white, title: 'Giao diện', trailingText: 'Tối', onTap: () => _showComingSoon('Cài đặt giao diện')),
                 _buildMenuItem(icon: Icons.monetization_on_outlined, iconColor: Colors.white, title: 'Tiền tệ hiển thị', trailingText: 'VND', onTap: () => _showComingSoon('Chọn tiền tệ')),
@@ -591,9 +638,9 @@ class _ProfileState extends State<Profile> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: const Color(0xFF121214),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.03), width: 1),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.05), width: 1),
       ),
       child: Column(children: children),
     );
@@ -604,6 +651,7 @@ class _ProfileState extends State<Profile> {
     required Color iconColor,
     required String title,
     String? trailingText,
+    Widget? trailingWidget,
     required VoidCallback onTap,
   }) {
     return InkWell(
@@ -613,22 +661,26 @@ class _ProfileState extends State<Profile> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         child: Row(
           children: [
-            Icon(icon, color: iconColor.withValues(alpha: 0.9), size: 22),
+            Icon(icon, color: Colors.black.withValues(alpha: 0.9), size: 22),
             const SizedBox(width: 14),
             Expanded(
               child: Text(
                 title,
-                style: GoogleFonts.manrope(color: Colors.white.withValues(alpha: 0.9), fontSize: 15, fontWeight: FontWeight.w600),
+                style: GoogleFonts.manrope(color: Colors.black.withValues(alpha: 0.9), fontSize: 15, fontWeight: FontWeight.w600),
               ),
             ),
             if (trailingText != null) ...[
               Text(
                 trailingText,
-                style: GoogleFonts.manrope(color: Colors.white.withValues(alpha: 0.35), fontSize: 14, fontWeight: FontWeight.w500),
+                style: GoogleFonts.manrope(color: Colors.black.withValues(alpha: 0.35), fontSize: 14, fontWeight: FontWeight.w500),
               ),
               const SizedBox(width: 8),
             ],
-            Icon(Icons.arrow_forward_ios_rounded, color: Colors.white.withValues(alpha: 0.15), size: 14),
+            if (trailingWidget != null) ...[
+              trailingWidget,
+              const SizedBox(width: 8),
+            ],
+            Icon(Icons.arrow_forward_ios_rounded, color: Colors.black.withValues(alpha: 0.15), size: 14),
           ],
         ),
       ),

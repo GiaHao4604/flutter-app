@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,12 +8,12 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_application_1/services/auth_session_service.dart';
-import 'package:flutter_application_1/services/calendar_api_service.dart';
 import 'package:flutter_application_1/services/calendar_refresh_notifier.dart';
 import 'package:flutter_application_1/services/calendar_storage_service.dart';
 import 'package:flutter_application_1/services/finance_api_service.dart';
-import 'package:flutter_application_1/services/post_api_service.dart';
 import 'package:flutter_application_1/services/budget_storage_service.dart';
+import 'package:flutter_application_1/services/post_upload_manager.dart';
+import 'package:flutter_application_1/main.dart';
 
 class Home2 extends StatefulWidget {
   final File imageFile;
@@ -42,10 +43,8 @@ class _Home2State extends State<Home2> {
   String? _selectedCategoryKey;
   String? _selectedCategoryLabel;
   final AuthSessionService _sessionService = AuthSessionService();
-  final CalendarApiService _apiService = CalendarApiService();
   final CalendarStorageService _storageService = CalendarStorageService();
   final FinanceApiService _financeApiService = FinanceApiService();
-  final PostApiService _postApiService = PostApiService();
   final BudgetStorageService _budgetStorageService = BudgetStorageService();
   // removed unused fields: _lastSafeAmountText, _maxAllowedVnd
 
@@ -54,127 +53,54 @@ class _Home2State extends State<Home2> {
     if (_isUploading) return;
 
     setState(() => _isUploading = true);
-    await Future.delayed(const Duration(seconds: 1));
 
     await _saveCalendarPost();
 
     if (!mounted) return;
     setState(() => _isUploading = false);
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Đăng bài thành công')));
+    
+    scaffoldMessengerKey.currentState?.showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+            SizedBox(width: 12),
+            Text('Đang tải lên...'),
+          ],
+        ),
+        duration: Duration(seconds: 2), // Tự động biến mất sau 2s
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    
     Navigator.pop(context);
   }
 
   Future<void> _saveCalendarPost() async {
     final now = widget.capturedAt ?? DateTime.now();
     final amountToSave = _pendingAmount > 0 ? _pendingAmount : _parseAmount();
-    final token = await _sessionService.getToken();
     final selectedCategoryKey = _selectedCategoryKey?.trim();
-    final selectedCategoryId = await _resolveRemoteCategoryId(
-      selectedCategoryKey,
-      _selectedCategoryLabel,
-    );
 
-    if (token != null && token.trim().isNotEmpty) {
-      final clientLocalId = now.millisecondsSinceEpoch.toString();
-      final remote = await _apiService.createEntry(
-        token: token,
-        imageFile: widget.imageFile,
-        amount: amountToSave,
-        isExpense: _isExpense,
-        dateKey: _dateKey(now),
-        date: now.toUtc().toIso8601String(),
-        clientLocalId: clientLocalId,
-        categoryId: selectedCategoryId,
-        categoryKey: selectedCategoryKey,
-        slug: selectedCategoryKey,
-        note: _captionController.text.trim(),
-      );
-
-      if (remote.success &&
-          remote.data != null &&
-          remote.data is Map<String, dynamic>) {
-        final serverData = Map<String, dynamic>.from(remote.data!);
-        await _syncTransactionForBudget(
-          token: token,
-          amount: amountToSave,
-          now: now,
-          serverData: serverData,
-          categoryId: selectedCategoryId,
-        );
-        await _saveCalendarPostLocally(
-          now: now,
-          amountToSave: amountToSave,
-          serverData: serverData,
-        );
-        await _syncSocialPost(token: token);
-        return;
-      }
-    }
-
+    // 1. Lưu lập tức vào Local để trừ tiền ở Budget/Calendar
     await _saveCalendarPostLocally(now: now, amountToSave: amountToSave);
-    if (token != null && token.trim().isNotEmpty) {
-      await _syncSocialPost(token: token);
-    }
-  }
 
-  Future<void> _syncSocialPost({required String token}) async {
-    final caption = _captionController.text.trim();
-    debugPrint('Starting social upload, caption=${caption.length} chars');
-    final result = await _postApiService.uploadPost(
-      token: token,
-      imageFile: widget.imageFile,
-      caption: caption,
-    );
-
-    debugPrint('Social upload finished: success=${result.success} status=${result.statusCode} message=${result.message}');
-
-    if (!result.success) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Không thể upload bài viết: ${result.message}')),
-      );
-      return;
-    }
-
-    try {
-      calendarRefreshNotifier.value++;
-    } catch (_) {}
-  }
-
-  Future<void> _syncTransactionForBudget({
-    required String token,
-    required int amount,
-    required DateTime now,
-    required Map<String, dynamic> serverData,
-    required int? categoryId,
-  }) async {
-    if (amount <= 0 || categoryId == null) return;
-
-    final calendarEntryId = int.tryParse(serverData['id']?.toString() ?? '');
-    if (calendarEntryId == null) return;
-
-    final result = await _financeApiService.createTransaction(
-      token: token,
-      amount: amount,
+    // 2. Đưa vào hàng đợi Upload chạy nền
+    final clientLocalId = now.millisecondsSinceEpoch.toString();
+    await PostUploadManager.instance.enqueue(
+      localId: clientLocalId,
+      imagePath: widget.imageFile.path,
+      amount: amountToSave,
       isExpense: _isExpense,
-      transactionDate: _dateKey(now),
-      categoryId: categoryId,
-      note: _captionController.text.trim(),
-      calendarEntryId: calendarEntryId,
+      dateKey: _dateKey(now),
+      dateIso: now.toUtc().toIso8601String(),
+      categoryId: null, // Bỏ qua việc resolve trên luồng chính để tránh treo UI
+      categoryKey: selectedCategoryKey,
+      categoryLabel: _selectedCategoryLabel,
+      caption: _captionController.text.trim(),
     );
-
-    // If the transaction sync succeeded on the server, notify listeners so
-    // that UI screens (like the Budget screen) can refresh and pick up the
-    // latest spent amounts returned by the finance API.
-    if (result.success) {
-      try {
-        calendarRefreshNotifier.value++;
-      } catch (_) {}
-    }
   }
+
+
 
   Future<void> _saveCalendarPostLocally({
     required DateTime now,
@@ -276,35 +202,6 @@ class _Home2State extends State<Home2> {
     return storedFile.path;
   }
 
-  Future<int?> _resolveRemoteCategoryId(String? key, String? label) async {
-    final token = await _sessionService.getToken();
-    if (token == null || token.trim().isEmpty) return null;
-    if (key == null || key.trim().isEmpty) return null;
-
-    final remote = await _financeApiService.getCategories(token: token);
-    if (!remote.success ||
-        remote.data == null ||
-        remote.data!['data'] is! List) {
-      return null;
-    }
-
-    for (final entry in remote.data!['data'] as List) {
-      if (entry is! Map) continue;
-      final item = Map<String, dynamic>.from(entry);
-      final itemId = item['id']?.toString() ?? '';
-      final itemKey = item['key']?.toString() ?? item['slug']?.toString() ?? '';
-      final itemLabel =
-          item['label']?.toString() ?? item['name']?.toString() ?? '';
-      if (itemId == key ||
-          itemKey == key ||
-          (label != null && itemLabel == label)) {
-        return int.tryParse(itemId);
-      }
-    }
-
-    return null;
-  }
-
   int _parseAmount() {
     final digits = _amountController.text.replaceAll(RegExp(r'[^0-9]'), '');
     return int.tryParse(digits) ?? 0;
@@ -316,13 +213,6 @@ class _Home2State extends State<Home2> {
     final month = local.month.toString().padLeft(2, '0');
     final day = local.day.toString().padLeft(2, '0');
     return '$year-$month-$day';
-  }
-
-  String _groupSignature(Map<String, String> group) {
-    final key = group['key']?.trim().toLowerCase() ?? '';
-    final label = group['label']?.trim().toLowerCase() ?? '';
-    if (key.isNotEmpty) return key;
-    return label;
   }
 
   List<Map<String, String>> _dedupeAndFilterGroups(
@@ -358,7 +248,8 @@ class _Home2State extends State<Home2> {
         if (c.isNotEmpty) seen.add(c);
       }
 
-      result.add({'key': key, 'label': label, 'kind': kind});
+      final iconKey = group['iconKey']?.trim() ?? '';
+      result.add({'key': key, 'label': label, 'kind': kind, 'iconKey': iconKey});
     }
 
     return result;
@@ -764,8 +655,9 @@ class _Home2State extends State<Home2> {
                                       final hasLetters = RegExp(
                                         r'[a-zA-Z]',
                                       ).hasMatch(value.text);
-                                      if (hasLetters)
+                                      if (hasLetters) {
                                         return const SizedBox.shrink();
+                                      }
                                       return const Text(
                                         ' đ',
                                         style: TextStyle(
@@ -900,6 +792,7 @@ class _Home2State extends State<Home2> {
                 'label':
                     item['label']?.toString() ?? item['name']?.toString() ?? '',
                 'kind': item['kind']?.toString() ?? '',
+                'iconKey': item['iconKey']?.toString() ?? '',
               };
             })
             .toList();
@@ -912,6 +805,7 @@ class _Home2State extends State<Home2> {
             'key': r['key'] ?? '',
             'label': r['label'] ?? '',
             'kind': r['kind'] ?? '',
+            'iconKey': r['iconKey'] ?? '',
           };
         }
         for (final lg in localGroups) {
@@ -922,6 +816,7 @@ class _Home2State extends State<Home2> {
             'key': lg['key'] ?? lg['label'] ?? '',
             'label': lg['label'] ?? '',
             'kind': lg['kind'] ?? '',
+            'iconKey': lg['iconKey'] ?? '',
           };
         }
         existing = mapByKey.values.toList();
@@ -939,7 +834,7 @@ class _Home2State extends State<Home2> {
     final choice = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF0F0F0F),
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -958,13 +853,13 @@ class _Home2State extends State<Home2> {
                       onPressed: () => Navigator.pop(ctx),
                       child: const Text(
                         'Huỷ',
-                        style: TextStyle(color: Colors.white60),
+                        style: TextStyle(color: Colors.black54),
                       ),
                     ),
                     const Text(
                       'Chọn hạng mục',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: Colors.black,
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
                       ),
@@ -980,7 +875,7 @@ class _Home2State extends State<Home2> {
                       'chưa có hạng mục ngân sách nào hãy tạo mới',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Colors.white54,
+                        color: Colors.black54,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
@@ -999,16 +894,17 @@ class _Home2State extends State<Home2> {
                             final kind = g['kind'];
                             final selected = _selectedCategoryKey == key;
                             final borderColor = selected
-                                ? Colors.white
+                                ? Colors.black
                                 : kind == 'income'
                                 ? const Color(0xFF2ECC71).withValues(alpha: 0.9)
                                 : const Color(
                                     0xFFFF4D4D,
                                   ).withValues(alpha: 0.9);
                             final fillColor = selected
-                                ? Colors.white.withValues(alpha: 0.14)
-                                : const Color(0xFF1A1A1C);
+                                ? Colors.black.withValues(alpha: 0.05)
+                                : Colors.grey.shade100;
 
+                            final iconKey = g['iconKey']?.toString() ?? '';
                             return InkWell(
                               onTap: () => Navigator.pop(ctx, key),
                               borderRadius: BorderRadius.circular(999),
@@ -1051,24 +947,28 @@ class _Home2State extends State<Home2> {
                                               ).withValues(alpha: 0.16),
                                         shape: BoxShape.circle,
                                       ),
-                                      child: Text(
-                                        label.isNotEmpty ? label[0] : '?',
-                                        style: TextStyle(
-                                          color: selected
-                                              ? Colors.white
-                                              : Colors.white,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
+                                      child: iconKey.runes.toList().length <= 3 && iconKey.isNotEmpty
+                                          ? Text(
+                                              iconKey,
+                                              style: const TextStyle(fontSize: 14, height: 1),
+                                              textAlign: TextAlign.center,
+                                            )
+                                          : Text(
+                                              label.isNotEmpty ? label[0] : '?',
+                                              style: TextStyle(
+                                                color: selected ? Colors.black : Colors.black87,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
                                     ),
                                     const SizedBox(width: 10),
                                     Text(
                                       label,
                                       style: TextStyle(
                                         color: selected
-                                            ? Colors.white
-                                            : Colors.white70,
+                                            ? Colors.black
+                                            : Colors.black54,
                                         fontSize: 14,
                                         fontWeight: FontWeight.w700,
                                       ),
@@ -1077,7 +977,7 @@ class _Home2State extends State<Home2> {
                                       const SizedBox(width: 8),
                                       const Icon(
                                         Icons.check_rounded,
-                                        color: Colors.white,
+                                        color: Colors.black,
                                         size: 18,
                                       ),
                                     ],
@@ -1277,20 +1177,21 @@ class _Home2State extends State<Home2> {
                               right: 0,
                               child: Center(
                                 child: IntrinsicWidth(
-                                  child: Container(
-                                    constraints: const BoxConstraints(
-                                      minWidth: 180,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: const Color(
-                                        0xFF6C4D3F,
-                                      ).withValues(alpha: 0.9),
-                                      borderRadius: BorderRadius.circular(30),
-                                    ),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(30),
+                                    child: BackdropFilter(
+                                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                                      child: Container(
+                                        constraints: const BoxConstraints(
+                                          minWidth: 180,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 20,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withValues(alpha: 0.5),
+                                        ),
                                     child: TextField(
                                       controller: _captionController,
                                       textAlign: TextAlign.left,
@@ -1311,13 +1212,15 @@ class _Home2State extends State<Home2> {
                                         isDense: true,
                                         contentPadding: EdgeInsets.symmetric(
                                           vertical: 8,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
+                                        ), // closes EdgeInsets
+                                      ), // closes InputDecoration
+                                    ), // closes TextField
+                                  ), // closes Container
+                                ), // closes BackdropFilter
+                              ), // closes ClipRRect
+                            ), // closes IntrinsicWidth
+                          ), // closes Center
+                        ), // closes Positioned
                             Positioned.fill(
                               child: IgnorePointer(
                                 ignoring: true,

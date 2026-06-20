@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_application_1/services/auth_session_service.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 class ChatApiResult {
   const ChatApiResult({
@@ -115,6 +116,8 @@ class ChatApiService {
     int? recipientId,
     String? message,
     String? imageUrl,
+    int? sharedPostId,
+    int? replyToId,
   }) {
     final payload = <String, dynamic>{};
 
@@ -130,6 +133,12 @@ class ChatApiService {
     if (imageUrl != null) {
       payload['image_url'] = imageUrl;
     }
+    if (sharedPostId != null) {
+      payload['shared_post_id'] = sharedPostId;
+    }
+    if (replyToId != null) {
+      payload['reply_to_id'] = replyToId;
+    }
 
     return _request((token, baseUrl) => http.post(
           Uri.parse('$baseUrl/messages'),
@@ -138,6 +147,16 @@ class ChatApiService {
             'Authorization': 'Bearer $token',
           },
           body: jsonEncode(payload),
+        ));
+  }
+
+  Future<ChatApiResult> deleteMessage(int messageId) {
+    return _request((token, baseUrl) => http.delete(
+          Uri.parse('$baseUrl/messages/$messageId'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
         ));
   }
 
@@ -175,14 +194,18 @@ class ChatApiService {
         final uri = Uri.parse('$baseUrl/messages/image');
         final request = http.MultipartRequest('POST', uri);
         request.headers['Authorization'] = 'Bearer $token';
-        request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
+        request.files.add(await http.MultipartFile.fromPath(
+          'image', 
+          imageFile.path,
+          contentType: MediaType('image', 'jpeg'),
+        ));
         return request.send().timeout(const Duration(seconds: 30));
       });
       final response = await http.Response.fromStream(streamedResponse);
       final decoded = _decodeJson(response.body);
       final success = decoded['success'] == true;
       final message = decoded['message']?.toString() ?? '';
-      return ChatApiResult(success: success, message: message, statusCode: response.statusCode, data: decoded['data']);
+      return ChatApiResult(success: success, message: message, statusCode: response.statusCode, data: decoded);
     } catch (error) {
       return ChatApiResult(success: false, message: _buildErrorMessage(error), statusCode: 0);
     }

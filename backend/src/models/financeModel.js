@@ -138,6 +138,8 @@ function normalizeBudgetRow(row) {
     iconKey: row.category_icon_key,
     kind: row.category_kind,
     color: row.category_color,
+    startDate: row.start_date,
+    endDate: row.end_date,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -300,19 +302,32 @@ async function upsertBudget(userId, payload) {
 
   const limitAmount = toMoneyString(payload.limitAmount ?? payload.limit ?? 0);
   const isRepeat = toBooleanish(payload.isRepeat, false) ? 1 : 0;
+  const startDate = payload.startDate ? normalizeDateString(payload.startDate) : null;
+  const endDate = payload.endDate ? normalizeDateString(payload.endDate) : null;
 
-  await pool.execute(
-    `INSERT INTO budgets (user_id, category_id, month_key, limit_amount, is_repeat)
-     VALUES (?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       limit_amount = VALUES(limit_amount),
-       is_repeat = VALUES(is_repeat),
-       updated_at = CURRENT_TIMESTAMP`,
-    [userId, categoryId, monthKey, limitAmount, isRepeat],
-  );
+  if (payload.id) {
+    await pool.execute(
+      `UPDATE budgets 
+       SET category_id = ?, month_key = ?, limit_amount = ?, is_repeat = ?, start_date = ?, end_date = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [categoryId, monthKey, limitAmount, isRepeat, startDate, endDate, payload.id, userId]
+    );
+  } else {
+    await pool.execute(
+      `INSERT INTO budgets (user_id, category_id, month_key, limit_amount, is_repeat, start_date, end_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         limit_amount = VALUES(limit_amount),
+         is_repeat = VALUES(is_repeat),
+         start_date = VALUES(start_date),
+         end_date = VALUES(end_date),
+         updated_at = CURRENT_TIMESTAMP`,
+      [userId, categoryId, monthKey, limitAmount, isRepeat, startDate, endDate],
+    );
+  }
 
   const [rows] = await pool.execute(
-    `SELECT b.id, b.user_id, b.category_id, b.month_key, b.limit_amount, b.is_repeat, b.created_at, b.updated_at,
+    `SELECT b.id, b.user_id, b.category_id, b.month_key, b.limit_amount, b.is_repeat, b.start_date, b.end_date, b.created_at, b.updated_at,
             c.slug AS category_slug, c.name AS category_name, c.icon_key AS category_icon_key,
             c.kind AS category_kind, c.color AS category_color
      FROM budgets b
@@ -337,6 +352,16 @@ async function updateBudget(userId, budgetId, payload) {
   if (payload.isRepeat !== undefined) {
     fields.push('is_repeat = ?');
     values.push(toBooleanish(payload.isRepeat, false) ? 1 : 0);
+  }
+
+  if (payload.startDate !== undefined) {
+    fields.push('start_date = ?');
+    values.push(payload.startDate ? normalizeDateString(payload.startDate) : null);
+  }
+
+  if (payload.endDate !== undefined) {
+    fields.push('end_date = ?');
+    values.push(payload.endDate ? normalizeDateString(payload.endDate) : null);
   }
 
   if (fields.length > 0) {
@@ -374,6 +399,8 @@ async function listBudgets(userId, monthKey) {
             b.month_key,
             b.limit_amount,
             b.is_repeat,
+            b.start_date,
+            b.end_date,
             b.created_at,
             b.updated_at,
             c.slug AS category_slug,
@@ -405,7 +432,9 @@ async function listBudgets(userId, monthKey) {
       AND t.transaction_date < ?
       LEFT JOIN calendar_entries ce
         ON ce.id = t.calendar_entry_id
-     WHERE b.user_id = ? AND b.month_key = ?
+     WHERE b.user_id = ? 
+       AND b.month_key = ? 
+       AND (b.end_date IS NULL OR b.end_date >= CURRENT_DATE())
      GROUP BY b.id, c.id
      ORDER BY c.sort_order ASC, c.name ASC`,
     [startKey, endKey, userId, normalizedMonthKey],
@@ -424,6 +453,76 @@ async function listBudgets(userId, monthKey) {
   };
 }
 
+async function listHistoryBudgets(userId) {
+  const currentMonthKey = parseMonthKey(null);
+
+  const [rows] = await pool.execute(
+    `SELECT b.id,
+            b.user_id,
+            b.category_id,
+            b.month_key,
+            b.limit_amount,
+            b.is_repeat,
+            b.start_date,
+            b.end_date,
+            b.created_at,
+            b.updated_at,
+            c.slug AS category_slug,
+            c.name AS category_name,
+            c.icon_key AS category_icon_key,
+            c.kind AS category_kind,
+            c.color AS category_color,
+            COALESCE(SUM(CASE
+              WHEN (
+                (c.kind = 'income' AND t.is_expense = 0)
+                OR (c.kind = 'both')
+                OR ((c.kind IS NULL OR c.kind = '' OR c.kind = 'expense') AND t.is_expense = 1)
+              )
+               AND (
+                 t.category_id = b.category_id
+                 OR (
+                   t.category_id IS NULL
+                   AND ce.category_key IS NOT NULL
+                   AND ce.category_key <> ''
+                   AND (ce.category_key = c.slug OR ce.category_key = CAST(c.id AS CHAR))
+                 )
+               )
+              THEN t.amount ELSE 0 END), 0) AS spent_amount
+     FROM budgets b
+     JOIN categories c ON c.id = b.category_id
+     LEFT JOIN transactions t
+       ON t.user_id = b.user_id
+      AND (
+         (b.start_date IS NOT NULL AND b.end_date IS NOT NULL AND t.transaction_date >= b.start_date AND t.transaction_date <= b.end_date)
+         OR
+         ((b.start_date IS NULL OR b.end_date IS NULL) AND DATE_FORMAT(t.transaction_date, '%Y-%m') = b.month_key)
+      )
+      LEFT JOIN calendar_entries ce
+        ON ce.id = t.calendar_entry_id
+     WHERE b.user_id = ? 
+       AND (
+         (b.end_date IS NOT NULL AND b.end_date < CURRENT_DATE()) 
+         OR 
+         (b.end_date IS NULL AND b.month_key < ?)
+       )
+       AND b.category_id NOT IN (
+         SELECT b2.category_id 
+         FROM budgets b2 
+         WHERE b2.user_id = ? 
+           AND (
+             (b2.end_date IS NOT NULL AND b2.end_date >= CURRENT_DATE())
+             OR
+             (b2.end_date IS NULL AND b2.month_key >= ?)
+           )
+       )
+     GROUP BY b.id, c.id
+     ORDER BY COALESCE(b.end_date, LAST_DAY(STR_TO_DATE(CONCAT(b.month_key, '-01'), '%Y-%m-%d'))) DESC, c.sort_order ASC`,
+    [userId, currentMonthKey, userId, currentMonthKey],
+  );
+
+  return rows.map(normalizeBudgetRow);
+}
+
 async function getBudgetByCategoryMonth(userId, categoryId, monthKey) {
   const normalizedMonthKey = parseMonthKey(monthKey);
   const [rows] = await pool.execute(
@@ -433,6 +532,8 @@ async function getBudgetByCategoryMonth(userId, categoryId, monthKey) {
             b.month_key,
             b.limit_amount,
             b.is_repeat,
+            b.start_date,
+            b.end_date,
             b.created_at,
             b.updated_at,
             c.slug AS category_slug,
@@ -796,6 +897,7 @@ module.exports = {
   getMonthlySummary,
   listBudgetDashboard,
   listBudgets,
+  listHistoryBudgets,
   listCategories,
   listTransactions,
   getBudgetByCategoryMonth,

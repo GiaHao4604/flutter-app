@@ -63,6 +63,12 @@ class FinanceApiService {
     return _get(token: token, path: '/budgets$query');
   }
 
+  Future<FinanceApiResult> getHistoryBudgets({
+    required String token,
+  }) async {
+    return _get(token: token, path: '/budgets/history');
+  }
+
   Future<FinanceApiResult> getSummary({
     required String token,
     String? monthKey,
@@ -80,6 +86,7 @@ class FinanceApiService {
   Future<FinanceApiResult> upsertCategory({
     required String token,
     required String name,
+    String? id,
     String? kind,
     String? iconKey,
     String? color,
@@ -89,6 +96,9 @@ class FinanceApiService {
     if (iconKey != null) body['iconKey'] = iconKey;
     if (color != null) body['color'] = color;
 
+    if (id != null && id.isNotEmpty) {
+      return _patch(token: token, path: '/categories/$id', body: body);
+    }
     return _post(token: token, path: '/categories', body: body);
   }
 
@@ -96,6 +106,7 @@ class FinanceApiService {
     required String token,
     required String name,
     required int limitAmount,
+    String? id,
     String? monthKey,
     int? categoryId,
     String? slug,
@@ -103,18 +114,23 @@ class FinanceApiService {
     String? iconKey,
     String? color,
     bool isRepeat = false,
+    String? startDate,
+    String? endDate,
   }) {
     final body = <String, dynamic>{
       'name': name,
       'limitAmount': limitAmount,
       'isRepeat': isRepeat,
     };
+    if (id != null) body['id'] = id;
     if (monthKey != null) body['monthKey'] = monthKey;
     if (categoryId != null) body['categoryId'] = categoryId;
     if (slug != null) body['slug'] = slug;
     if (kind != null) body['kind'] = kind;
     if (iconKey != null) body['iconKey'] = iconKey;
     if (color != null) body['color'] = color;
+    if (startDate != null) body['startDate'] = startDate;
+    if (endDate != null) body['endDate'] = endDate;
 
     return _post(token: token, path: '/budgets', body: body);
   }
@@ -168,7 +184,39 @@ class FinanceApiService {
                 'Authorization': 'Bearer $token',
               },
             )
-            .timeout(const Duration(seconds: 12)),
+            .timeout(const Duration(seconds: 10)),
+      );
+
+      return _decodeResponse(response);
+    } catch (error) {
+      return FinanceApiResult(
+        success: false,
+        message: _buildLocalServerErrorMessage(
+          error,
+          action: 'gọi finance API',
+        ),
+        statusCode: 0,
+      );
+    }
+  }
+
+  Future<FinanceApiResult> _patch({
+    required String token,
+    required String path,
+    required Map<String, dynamic> body,
+  }) async {
+    try {
+      final response = await _runWithBaseUrlFallback(
+        (baseUrl) => http
+            .patch(
+              Uri.parse('$baseUrl$path'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token',
+              },
+              body: jsonEncode(body),
+            )
+            .timeout(const Duration(seconds: 10)),
       );
 
       return _decodeResponse(response);
@@ -200,7 +248,7 @@ class FinanceApiService {
               },
               body: jsonEncode(body),
             )
-            .timeout(const Duration(seconds: 12)),
+            .timeout(const Duration(seconds: 10)),
       );
 
       return _decodeResponse(response);
@@ -230,7 +278,7 @@ class FinanceApiService {
                 'Authorization': 'Bearer $token',
               },
             )
-            .timeout(const Duration(seconds: 12)),
+            .timeout(const Duration(seconds: 10)),
       );
 
       return _decodeResponse(response);

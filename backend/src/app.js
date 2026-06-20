@@ -13,6 +13,7 @@ const financeRoutes = require('./routes/financeRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 
@@ -33,6 +34,7 @@ app.use('/api/finance', financeRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

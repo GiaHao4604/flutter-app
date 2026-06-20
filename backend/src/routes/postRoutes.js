@@ -32,5 +32,21 @@ router.post(
   postController.uploadPost,
 );
 router.get('/', postController.listPosts);
+router.post(
+  '/:id/report',
+  [
+    body('reason').optional().isString(),
+  ],
+  postController.reportPost,
+);
+router.post(
+  '/:id/react',
+  [
+    body('reaction_icon').isString().notEmpty(),
+  ],
+  postController.reactPost,
+);
+router.get('/:id/reactions', postController.getPostReactions);
+router.delete('/:id', postController.deletePost);
 
 module.exports = router;

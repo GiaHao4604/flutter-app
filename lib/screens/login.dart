@@ -46,6 +46,10 @@ class _LoginState extends State<Login> {
 
     if (meResult.success) {
       final role = meResult.data?['role'] ?? 'user';
+      await _sessionService.saveUserRole(role);
+      if (!mounted) {
+        return;
+      }
       if (role == 'admin' || role == 'director_admin') {
         Navigator.pushReplacementNamed(context, '/admin_home');
       } else {
@@ -101,13 +105,16 @@ class _LoginState extends State<Login> {
 
       if (token.isNotEmpty) {
         await _sessionService.saveToken(token);
+        await _sessionService.saveUserRole(loginRole);
         final meResult = await _authApiService.getMe(token: token);
         if (meResult.success) {
           final name = (meResult.data?['name'] as String?)?.trim() ?? '';
           final email = (meResult.data?['email'] as String?)?.trim() ?? '';
+          final roleFromMe = (meResult.data?['role'] as String?)?.trim() ?? loginRole;
           if (email.isNotEmpty) {
             await _sessionService.saveCurrentUserEmail(email);
           }
+          await _sessionService.saveUserRole(roleFromMe);
           if (name.isNotEmpty) {
             dialogMessage = 'Đăng nhập thành công. Xin chào $name';
           }

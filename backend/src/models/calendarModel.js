@@ -25,19 +25,13 @@ function toDateKey(value) {
       return trimmed;
     }
   }
-  // Always derive dateKey based on UTC components to avoid server timezone shifts.
+  // Use LOCAL date components (server timezone = UTC+7 = Vietnam)
+  // so the dateKey always reflects the user's local calendar date.
   const parsed = value ? new Date(value) : new Date();
-  if (Number.isNaN(parsed.getTime())) {
-    const now = new Date();
-    const year = now.getUTCFullYear();
-    const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(now.getUTCDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
-  const year = parsed.getUTCFullYear();
-  const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(parsed.getUTCDate()).padStart(2, '0');
+  const now = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
@@ -80,13 +74,15 @@ function mapEntryRow(row) {
     // to 'YYYY-MM-DDTHH:MM:SSZ' to force UTC interpretation.
     entryTs: (function () {
       if (!row.entry_ts) return null;
-      // If it's already a Date object
+      // If it's already a Date object (mysql2 parsed it correctly as local time → UTC Date)
       if (row.entry_ts instanceof Date) return row.entry_ts.toISOString();
       const s = String(row.entry_ts).trim();
-      // Match 'YYYY-MM-DD HH:MM:SS' (MySQL DATETIME default text)
+      // Match 'YYYY-MM-DD HH:MM:SS' (MySQL DATETIME, stored in server local time = UTC+7)
+      // Do NOT append Z — parse as local time so Date constructor uses server timezone correctly
       const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
       if (m) {
-        const iso = `${m[1]}T${m[2]}Z`;
+        // Parse as local time (no Z suffix) → server interprets as UTC+7 → toISOString() gives UTC
+        const iso = `${m[1]}T${m[2]}`;
         try {
           const d = new Date(iso);
           if (!Number.isNaN(d.getTime())) return d.toISOString();
@@ -102,6 +98,8 @@ function mapEntryRow(row) {
     amount: toMoneyNumber(row.amount),
     isExpense: Boolean(row.is_expense),
     categoryKey: row.category_key || null,
+    categoryName: row.category_name || null,
+    iconKey: row.icon_key || null,
     imageUrl: row.image_url,
     note: row.note,
     createdAt: row.created_at,
@@ -122,12 +120,15 @@ async function listMonthEntries(userId, { year, month, monthKey } = {}) {
             COALESCE(t.amount, 0) AS amount,
             COALESCE(t.is_expense, 1) AS is_expense,
             t.id AS transaction_id,
+            cat.name AS category_name,
+            cat.icon_key AS icon_key,
             c.image_url,
             c.note,
             c.created_at,
             c.updated_at
      FROM calendar_entries c
      LEFT JOIN transactions t ON t.calendar_entry_id = c.id AND t.user_id = c.user_id
+     LEFT JOIN categories cat ON t.category_id = cat.id OR (t.category_id IS NULL AND c.category_key = cat.slug AND cat.user_id = c.user_id)
     WHERE c.user_id = ? AND c.date_key >= ? AND c.date_key < ?
      ORDER BY c.date_key DESC, c.id DESC`,
     [userId, range.startKey, range.endKey],
@@ -193,12 +194,18 @@ async function getEntryById(userId, entryId) {
 }
 
 async function createEntry(userId, payload) {
-  // determine entry timestamp (prefer payload.date ISO string), store as UTC DATETIME
+  // determine entry timestamp (prefer payload.date ISO string)
   const parsedTs = payload && payload.date ? new Date(payload.date) : new Date();
   const entryDateObj = Number.isNaN(parsedTs.getTime()) ? new Date() : parsedTs;
-  // MySQL DATETIME format: 'YYYY-MM-DD HH:MM:SS'
-  const entryTs = entryDateObj.toISOString().slice(0, 19).replace('T', ' ');
-  // derive dateKey from provided date or computed timestamp
+
+  // Store as LOCAL server time (UTC+7) in MySQL DATETIME column.
+  // mysql2 reads DATETIME as local time → creates correct UTC Date object.
+  // Using UTC string here would cause mysql2 to misinterpret by +7h on read.
+  const pad = (n) => String(n).padStart(2, '0');
+  const local = entryDateObj; // Date object, server is UTC+7
+  const entryTs = `${local.getFullYear()}-${pad(local.getMonth()+1)}-${pad(local.getDate())} ${pad(local.getHours())}:${pad(local.getMinutes())}:${pad(local.getSeconds())}`;
+
+  // derive dateKey from provided dateKey (trusted client-local date) or fall back to local date
   const dateKey = toDateKey(payload.dateKey || entryDateObj);
   const imageUrl = payload.imageUrl ? String(payload.imageUrl).trim() : null;
   const note = payload.note ? String(payload.note).trim() : null;
@@ -244,7 +251,9 @@ async function updateEntry(userId, entryId, payload) {
     const parsed = payload.date ? new Date(payload.date) : null;
     const entryDateObj = parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date(payload.dateKey || Date.now());
     const dateKey = toDateKey(payload.dateKey || entryDateObj);
-    const entryTs = entryDateObj.toISOString().slice(0, 19).replace('T', ' ');
+    // Store local VN time (UTC+7) so mysql2 reads it back correctly
+    const pad = (n) => String(n).padStart(2, '0');
+    const entryTs = `${entryDateObj.getFullYear()}-${pad(entryDateObj.getMonth()+1)}-${pad(entryDateObj.getDate())} ${pad(entryDateObj.getHours())}:${pad(entryDateObj.getMinutes())}:${pad(entryDateObj.getSeconds())}`;
     fields.push('entry_date = ?', 'date_key = ?', 'entry_ts = ?');
     values.push(dateKey, dateKey, entryTs);
   }

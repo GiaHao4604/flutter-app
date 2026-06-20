@@ -1,4 +1,5 @@
 const { pool } = require('../config/db');
+const { getIO } = require('../utils/socket');
 const fs = require('fs/promises');
 const path = require('path');
 
@@ -226,7 +227,51 @@ async function resolveReport(req, res) {
 async function deletePost(req, res) {
   try {
     const postId = req.params.id;
-    await pool.query('DELETE FROM posts WHERE id = ?', [postId]);
+    const [posts] = await pool.query(`
+      SELECT p.user_id, p.calendar_entry_id, p.caption, p.image_url, 
+             t.amount, c.name as category_name
+      FROM posts p
+      LEFT JOIN transactions t ON p.calendar_entry_id = t.calendar_entry_id
+      LEFT JOIN calendar_entries ce ON p.calendar_entry_id = ce.id
+      LEFT JOIN categories c ON ce.category_key = c.slug
+      WHERE p.id = ?
+    `, [postId]);
+    
+    if (posts.length > 0) {
+      const post = posts[0];
+      const userId = post.user_id;
+      const calEntryId = post.calendar_entry_id;
+      
+      const snapshot = {
+        caption: post.caption,
+        image_url: post.image_url,
+        amount: post.amount,
+        category_name: post.category_name
+      };
+
+      if (calEntryId) {
+        await pool.query('DELETE FROM calendar_entries WHERE id = ?', [calEntryId]);
+      }
+      await pool.query('DELETE FROM posts WHERE id = ?', [postId]);
+
+      // Gửi thông báo cho người dùng qua DB
+      if (userId) {
+        const title = 'Cảnh báo vi phạm cộng đồng';
+        const body = 'Chúng tôi phát hiện bài đăng của bạn không đúng chuẩn mực nên đã bị ẩn và xóa. Mọi thắc mắc xin liên hệ về: yanghow4604@gmail.com';
+        await pool.query(
+          'INSERT INTO notifications (user_id, title, body, post_snapshot) VALUES (?, ?, ?, ?)',
+          [userId, title, body, JSON.stringify(snapshot)]
+        );
+
+        // Phát sự kiện realtime tới người dùng
+        try {
+          const io = getIO();
+          io.to(`user_${userId}`).emit('system_notification', { title, body });
+        } catch (e) {
+          console.error('Lỗi emit system_notification:', e);
+        }
+      }
+    }
     return res.json({ success: true, message: 'Đã xóa bài viết vi phạm' });
   } catch (error) {
     console.error('deletePost error:', error);

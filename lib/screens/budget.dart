@@ -2,16 +2,26 @@ import 'dart:math';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+import 'package:flutter_application_1/services/notification_service.dart';
 import 'package:flutter_application_1/services/auth_session_service.dart';
 import 'package:flutter_application_1/services/budget_storage_service.dart';
 import 'package:flutter_application_1/services/calendar_storage_service.dart';
 import 'package:flutter_application_1/services/calendar_refresh_notifier.dart';
 import 'package:flutter_application_1/services/finance_api_service.dart';
+
+import 'budget_history.dart';
+import '../widgets/budget/budget_components.dart';
+import 'budget_detail.dart';
+
+
+
+
+
+
+
 
 class BudgetScreen extends StatefulWidget {
   const BudgetScreen({super.key});
@@ -20,19 +30,6 @@ class BudgetScreen extends StatefulWidget {
   State<BudgetScreen> createState() => _BudgetScreenState();
 }
 
-class _BudgetPeriodChoice {
-  const _BudgetPeriodChoice({
-    required this.key,
-    required this.label,
-    required this.rangeText,
-    required this.monthKey,
-  });
-
-  final String key;
-  final String label;
-  final String rangeText;
-  final String monthKey;
-}
 
 class _BudgetScreenState extends State<BudgetScreen> {
   final AuthSessionService _sessionService = AuthSessionService();
@@ -45,6 +42,29 @@ class _BudgetScreenState extends State<BudgetScreen> {
   bool _isLoading = true;
   int _monthlyBudget = 0;
   List<Map<String, dynamic>> _items = <Map<String, dynamic>>[];
+  
+  List<Map<String, dynamic>> _rawItems = <Map<String, dynamic>>[];
+  String _dashboardPeriodChoice = 'all';
+
+  DateTimeRange get _currentDashboardRange {
+    final now = DateTime.now();
+    switch (_dashboardPeriodChoice) {
+      case 'week':
+        final monday = now.subtract(Duration(days: now.weekday - 1));
+        final start = DateTime(monday.year, monday.month, monday.day);
+        final end = start.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+        return DateTimeRange(start: start, end: end);
+      case 'year':
+        final start = DateTime(now.year, 1, 1);
+        final end = DateTime(now.year, 12, 31, 23, 59, 59);
+        return DateTimeRange(start: start, end: end);
+      case 'month':
+      default:
+        final start = DateTime(now.year, now.month, 1);
+        final end = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+        return DateTimeRange(start: start, end: end);
+    }
+  }
 
   String _currentMonthKey() {
     final now = DateTime.now();
@@ -91,7 +111,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
     return _formatRange(start, end);
   }
 
-  List<_BudgetPeriodChoice> _buildBudgetPeriodChoices(DateTime now) {
+  List<BudgetPeriodChoice> _buildBudgetPeriodChoices(DateTime now) {
     final monthKey =
         '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
     final weekStart = _startOfWeek(now);
@@ -101,34 +121,52 @@ class _BudgetScreenState extends State<BudgetScreen> {
     final quarterStart = _startOfQuarter(now);
     final quarterEnd = _endOfQuarter(now);
     final yearStart = DateTime(now.year, 1, 1);
-    final yearEnd = DateTime(now.year, 12, 31);
+    final yearEnd = DateTime(now.year, 12, 31, 23, 59, 59);
 
     return [
-      _BudgetPeriodChoice(
+      BudgetPeriodChoice(
         key: 'week',
         label: 'Tuần này',
         rangeText: _formatRange(weekStart, weekEnd),
         monthKey: monthKey,
+        customRange: DateTimeRange(start: weekStart, end: weekEnd),
       ),
-      _BudgetPeriodChoice(
+      BudgetPeriodChoice(
+        key: 'next7days',
+        label: '7 ngày tới (từ hôm nay)',
+        rangeText: _formatRange(now, now.add(const Duration(days: 6))),
+        monthKey: monthKey,
+        customRange: DateTimeRange(start: now, end: now.add(const Duration(days: 6))),
+      ),
+      BudgetPeriodChoice(
         key: 'month',
         label: 'Tháng này',
         rangeText: _formatRange(monthStart, monthEnd),
         monthKey: monthKey,
+        customRange: DateTimeRange(start: monthStart, end: monthEnd),
       ),
-      _BudgetPeriodChoice(
+      BudgetPeriodChoice(
+        key: 'next30days',
+        label: '30 ngày tới (từ hôm nay)',
+        rangeText: _formatRange(now, now.add(const Duration(days: 29))),
+        monthKey: monthKey,
+        customRange: DateTimeRange(start: now, end: now.add(const Duration(days: 29))),
+      ),
+      BudgetPeriodChoice(
         key: 'quarter',
         label: 'Quý này',
         rangeText: _formatRange(quarterStart, quarterEnd),
         monthKey: monthKey,
+        customRange: DateTimeRange(start: quarterStart, end: quarterEnd),
       ),
-      _BudgetPeriodChoice(
+      BudgetPeriodChoice(
         key: 'year',
         label: 'Năm nay',
         rangeText: _formatRange(yearStart, yearEnd),
         monthKey: monthKey,
+        customRange: DateTimeRange(start: yearStart, end: yearEnd),
       ),
-      _BudgetPeriodChoice(
+      BudgetPeriodChoice(
         key: 'custom',
         label: 'Tùy chỉnh',
         rangeText: _formatRange(now, now),
@@ -198,13 +236,12 @@ class _BudgetScreenState extends State<BudgetScreen> {
           category['iconKey'] ??
           category['icon_key'] ??
           'other',
-      'kind':
-          item['kind'] ?? item['categoryKind'] ?? category['kind'] ?? 'expense',
-      'color':
-          item['color'] ??
-          item['categoryColor'] ??
-          category['color'] ??
-          '#8E8E93',
+      'kind': item['kind'] ?? item['categoryKind'] ?? category['kind'] ?? 'expense',
+      'color': item['color'] ?? item['categoryColor'] ?? category['color'] ?? '#8E8E93',
+      'startDate': item['startDate'] ?? item['start_date'],
+      'endDate': item['endDate'] ?? item['end_date'],
+      'monthKey': item['monthKey'] ?? item['month_key'],
+      'isRepeat': item['isRepeat'] ?? item['is_repeat'] ?? false,
       'createdAt': item['createdAt'] ?? item['created_at'],
       'updatedAt': item['updatedAt'] ?? item['updated_at'],
     };
@@ -251,51 +288,37 @@ class _BudgetScreenState extends State<BudgetScreen> {
     }
   }
 
-  IconData _iconForKey(String? key) {
-    switch (key) {
-      case 'home':
-        return Icons.home_outlined;
-      case 'food':
-        return Icons.restaurant_outlined;
-      case 'car':
-        return Icons.directions_car_outlined;
-      case 'shop':
-        return Icons.shopping_bag_outlined;
-      case 'health':
-        return Icons.medical_services_outlined;
-      default:
-        return Icons.category_outlined;
-    }
-  }
 
-  Color _iconColorForKey(String? key) {
-    switch (key) {
-      case 'home':
-        return const Color(0xFF4E8DFF);
-      case 'food':
-        return const Color(0xFFFFC04D);
-      case 'car':
-        return const Color(0xFF5DD6FF);
-      case 'shop':
-        return const Color(0xFFBF5AF2);
-      case 'health':
-        return const Color(0xFFFF5C8A);
-      default:
-        return const Color(0xFF8E8E93);
-    }
-  }
 
   int get _totalSpent =>
       _items.fold<int>(0, (sum, item) => sum + _parseAmount(item['spent']));
   int get _remaining => _monthlyBudget - _totalSpent;
   int get _daysLeft {
     final now = DateTime.now();
-    final lastDay = DateTime(now.year, now.month + 1, 0);
-    return max(0, lastDay.day - now.day);
+    final range = _currentDashboardRange;
+    final endDay = DateTime(range.end.year, range.end.month, range.end.day);
+    final nowDay = DateTime(now.year, now.month, now.day);
+    return max(0, endDay.difference(nowDay).inDays);
   }
 
   double get _progress =>
       _monthlyBudget <= 0 ? 0 : (_totalSpent / _monthlyBudget).clamp(0.0, 1.0);
+
+  /// Tiền an toàn mỗi ngày = (Còn lại) / (Số ngày còn lại trong kỳ)
+  int get _dailySafeToSpend {
+    final days = _daysLeft;
+    if (days <= 0 || _remaining <= 0) return 0;
+    return (_remaining / days).floor();
+  }
+
+  /// Màu thanh tiến độ dựa trên mức sử dụng:
+  /// < 50% = xanh lá, 50-80% = vàng, 80-100% = cam, >= 100% = đỏ
+  Color _progressColor(double ratio) {
+    if (ratio >= 1.0) return const Color(0xFFFF3B30); // Đỏ — vượt ngân sách
+    if (ratio >= 0.8) return const Color(0xFFFF9500); // Cam — cảnh báo
+    if (ratio >= 0.5) return const Color(0xFFFFCC00); // Vàng — chú ý
+    return const Color(0xFF34C759); // Xanh lá — an toàn
+  }
 
   void _notifyOverBudgetItems(List<Map<String, dynamic>> items) {
     if (!mounted) return;
@@ -345,6 +368,37 @@ class _BudgetScreenState extends State<BudgetScreen> {
     return true;
   }
 
+  Future<List<Map<String, dynamic>>> _readLocalExpenseTransactionsRange(DateTimeRange range) async {
+    final prefs = await SharedPreferences.getInstance();
+    final storageKey = await _calendarStorageService.currentCalendarKey();
+    final raw = prefs.getString(storageKey);
+    if (raw == null || raw.isEmpty) return [];
+
+    final results = <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return results;
+
+      for (final entry in decoded) {
+        if (entry is! Map) continue;
+        final post = Map<String, dynamic>.from(entry);
+
+        final rawDate = post['date']?.toString().trim() ?? post['entryTs']?.toString().trim() ?? '';
+        final parsedDate = DateTime.tryParse(rawDate)?.toLocal();
+        if (parsedDate == null) continue;
+
+        if (parsedDate.isBefore(range.start) || parsedDate.isAfter(range.end)) {
+          continue; // Outside of range!
+        }
+
+        if (!_postIsExpense(post)) continue;
+        post['_parsedDate'] = parsedDate;
+        results.add(post);
+      }
+    } catch (_) {}
+    return results;
+  }
+
   Future<Map<String, int>> _readLocalSpentByCategory(String monthKey) async {
     final prefs = await SharedPreferences.getInstance();
     final storageKey = await _calendarStorageService.currentCalendarKey();
@@ -359,6 +413,11 @@ class _BudgetScreenState extends State<BudgetScreen> {
       for (final entry in decoded) {
         if (entry is! Map) continue;
         final post = Map<String, dynamic>.from(entry);
+        
+        // ONLY sum pending posts that haven't been synced to the server yet
+        final id = post['id']?.toString().trim() ?? '';
+        if (id.isNotEmpty) continue;
+
         if (_monthKeyFromRawDate(post) != monthKey) continue;
 
         final categoryKey =
@@ -387,9 +446,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
 
   List<Map<String, dynamic>> _mergeLocalSpentFallback(
     List<Map<String, dynamic>> items,
-    Map<String, int> localSpentByCategory,
+    Map<String, int> localPendingSpentByCategory,
   ) {
-    if (items.isEmpty || localSpentByCategory.isEmpty) return items;
+    if (items.isEmpty) return items;
 
     return items.map((item) {
       final itemKey =
@@ -399,16 +458,16 @@ class _BudgetScreenState extends State<BudgetScreen> {
                   item['key'])
               ?.toString()
               .trim();
+      
+      final remoteSpent = _parseAmount(item['spent']);
+      
       if (itemKey == null || itemKey.isEmpty) return item;
 
-      final localSpent = localSpentByCategory[itemKey] ?? 0;
-      if (localSpent <= 0) return item;
-
-      final remoteSpent = _parseAmount(item['spent']);
-      if (localSpent <= remoteSpent) return item;
+      final localPendingSpent = localPendingSpentByCategory[itemKey] ?? 0;
+      if (localPendingSpent <= 0) return item;
 
       final next = Map<String, dynamic>.from(item);
-      next['spent'] = localSpent;
+      next['spent'] = remoteSpent + localPendingSpent;
       return next;
     }).toList();
   }
@@ -444,21 +503,45 @@ class _BudgetScreenState extends State<BudgetScreen> {
           // If we have local group labels (user-edited names), prefer them
           try {
             final localGroups = await _storageService.readBudgetGroups();
-            final localMap = <String, String>{};
+            // Build lookup maps: slug key → label AND slug key → iconKey (emoji)
+            final localLabelMap = <String, String>{};
+            final localIconMap = <String, String>{};
             for (final g in localGroups) {
               final k = (g['key'] ?? '').toString().trim().toLowerCase();
               final l = (g['label'] ?? '').toString();
-              if (k.isNotEmpty && l.isNotEmpty) localMap[k] = l;
+              final icon = (g['iconKey'] ?? '').toString();
+              if (k.isNotEmpty) {
+                if (l.isNotEmpty) localLabelMap[k] = l;
+                // Chỉ lưu nếu là emoji thực sự (unicode > 0xFF)
+                if (icon.isNotEmpty &&
+                    icon.runes.isNotEmpty &&
+                    icon.runes.first > 0xFF) {
+                  localIconMap[k] = icon;
+                }
+              }
             }
             items = items.map((it) {
-              final ik =
-                  (it['iconKey'] ?? it['categoryKey'] ?? it['key'])
-                      ?.toString() ??
-                  '';
-              final k = ik.trim().toLowerCase();
-              if (k.isNotEmpty && localMap.containsKey(k)) {
+              // Dùng categoryKey (slug) để tra icon và label
+              final catKey =
+                  (it['categoryKey'] ?? it['key'])?.toString().trim().toLowerCase() ?? '';
+              // iconKey hiện tại từ server (có thể là slug)
+              final rawIcon = (it['iconKey'] ?? '').toString().trim();
+              final isRawEmoji =
+                  rawIcon.isNotEmpty &&
+                  rawIcon.runes.isNotEmpty &&
+                  rawIcon.runes.first > 0xFF;
+
+              if (catKey.isNotEmpty &&
+                  (localLabelMap.containsKey(catKey) ||
+                      localIconMap.containsKey(catKey))) {
                 final next = Map<String, dynamic>.from(it);
-                next['name'] = localMap[k];
+                if (localLabelMap.containsKey(catKey)) {
+                  next['name'] = localLabelMap[catKey];
+                }
+                // Ghi đè iconKey bằng emoji từ local nếu server chỉ trả slug
+                if (!isRawEmoji && localIconMap.containsKey(catKey)) {
+                  next['iconKey'] = localIconMap[catKey];
+                }
                 return next;
               }
               return it;
@@ -474,13 +557,148 @@ class _BudgetScreenState extends State<BudgetScreen> {
     final localSpentByCategory = await _readLocalSpentByCategory(monthKey);
     items = _mergeLocalSpentFallback(items, localSpentByCategory);
 
+    _rawItems = items;
+    await _applyDashboardFilter();
+
     if (!mounted) return;
     setState(() {
-      _monthlyBudget = monthlyBudget;
-      _items = items;
       _isLoading = false;
     });
     _notifyOverBudgetItems(items);
+  }
+
+  DateTimeRange _rangeFromMonthKey(String monthKey) {
+    final parts = monthKey.split('-');
+    final year = int.tryParse(parts.length == 2 ? parts[0] : '') ?? DateTime.now().year;
+    final month = int.tryParse(parts.length == 2 ? parts[1] : '') ?? DateTime.now().month;
+    final start = DateTime(year, month, 1);
+    final end = DateTime(year, month + 1, 0, 23, 59, 59);
+    return DateTimeRange(start: start, end: end);
+  }
+
+  Future<void> _applyDashboardFilter() async {
+    final range = _currentDashboardRange;
+    final transactions = await _readLocalExpenseTransactionsRange(range);
+
+    int totalLimit = 0;
+    List<Map<String, dynamic>> filteredItems = [];
+
+    for (final item in _rawItems) {
+      final itemStartStr = item['startDate'];
+      final itemEndStr = item['endDate'];
+      DateTime itemStart;
+      DateTime itemEnd;
+      if (itemStartStr != null && itemEndStr != null) {
+        itemStart = DateTime.parse(itemStartStr).toLocal();
+        itemEnd = DateTime.parse(itemEndStr).toLocal();
+      } else {
+        final mk = item['monthKey']?.toString() ?? _currentMonthKey();
+        final r = _rangeFromMonthKey(mk);
+        itemStart = r.start;
+        itemEnd = r.end;
+      }
+
+      final overlapStart = itemStart.isAfter(range.start) ? itemStart : range.start;
+      final overlapEnd = itemEnd.isBefore(range.end) ? itemEnd : range.end;
+
+      if (!overlapEnd.isBefore(overlapStart)) {
+        final itemTotalDays = itemEnd.difference(itemStart).inDays + 1;
+
+        // Phân loại ngân sách: Tuần (<=7 ngày), Tháng (28-31 ngày), Năm (>=365 ngày), còn lại là Tùy chỉnh
+        bool isWeeklyBudget = itemTotalDays <= 7;
+        bool isMonthlyBudget = itemTotalDays >= 28 && itemTotalDays <= 31;
+        bool isYearlyBudget = itemTotalDays >= 365 && itemTotalDays <= 366;
+        bool isCustomBudget = !isWeeklyBudget && !isMonthlyBudget && !isYearlyBudget;
+
+        // Chỉ hiển thị ngân sách có ngày bắt đầu NẰM TRONG khoảng thời gian của dashboard đang chọn
+        // Điều này giúp ngân sách không bị "chạy lộn xộn" sang các tuần/tháng khác
+        bool startsInRange = !itemStart.isBefore(range.start) && !itemStart.isAfter(range.end);
+        if (_dashboardPeriodChoice != 'all' && _dashboardPeriodChoice != 'custom') {
+          if (!startsInRange) continue;
+        }
+
+        // Phân loại theo tab
+        if (_dashboardPeriodChoice == 'week' && !isWeeklyBudget) continue;
+        if (_dashboardPeriodChoice == 'month' && !isMonthlyBudget) continue;
+        if (_dashboardPeriodChoice == 'year' && !isYearlyBudget) continue;
+        if (_dashboardPeriodChoice == 'custom' && !isCustomBudget) continue;
+
+        final limit = _parseAmount(item['limit']);
+        // Không chia nhỏ số tiền theo ngày nữa, hiển thị đúng 100% số tiền người dùng tạo
+        final actualLimit = limit;
+        totalLimit += actualLimit;
+
+        final itemKey = (item['categoryKey'] ?? item['category_key'] ?? item['iconKey'] ?? item['key'])?.toString().trim();
+        
+        int localSpent = 0;
+        if (itemKey != null) {
+          for (final t in transactions) {
+            final tDate = t['_parsedDate'] as DateTime;
+            if (!tDate.isBefore(overlapStart) && !tDate.isAfter(overlapEnd)) {
+              final catKey = (t['categoryKey'] ?? t['category_key'] ?? t['categoryId'])?.toString().trim();
+              if (catKey == itemKey) {
+                localSpent += _parseAmount(t['amount']);
+              }
+            }
+          }
+        }
+
+        final next = Map<String, dynamic>.from(item);
+        next['limit'] = actualLimit;
+        next['spent'] = localSpent;
+        filteredItems.add(next);
+
+        if (actualLimit > 0) {
+          final ratio = localSpent / actualLimit;
+          final name = item['name']?.toString() ?? 'Hạng mục';
+          if (ratio >= 1.0) {
+            NotificationService().showThresholdNotification(name, 100, localSpent, actualLimit);
+          } else if (ratio >= 0.8) {
+            NotificationService().showThresholdNotification(name, (ratio * 100).toInt(), localSpent, actualLimit);
+          }
+        }
+      }
+    }
+
+    filteredItems.sort((a, b) {
+      final sa = (a['sortOrder'] ?? 0) as int;
+      final sb = (b['sortOrder'] ?? 0) as int;
+      if (sa != sb) return sa.compareTo(sb);
+      final na = (a['name'] ?? '').toString();
+      final nb = (b['name'] ?? '').toString();
+      return na.compareTo(nb);
+    });
+
+    _items = filteredItems;
+
+    if (!mounted) return;
+    setState(() {
+      _monthlyBudget = totalLimit;
+      _items = filteredItems;
+    });
+  }
+
+  String _buildDurationText(Map<String, dynamic> item) {
+    try {
+      final startStr = item['startDate'];
+      final endStr = item['endDate'];
+      DateTime start;
+      DateTime end;
+      if (startStr != null && endStr != null) {
+        start = DateTime.parse(startStr).toLocal();
+        end = DateTime.parse(endStr).toLocal();
+      } else {
+        final mk = item['monthKey']?.toString() ?? _currentMonthKey();
+        final r = _rangeFromMonthKey(mk);
+        start = r.start;
+        end = r.end;
+      }
+      final s = '${start.day.toString().padLeft(2, '0')}/${start.month.toString().padLeft(2, '0')}';
+      final e = '${end.day.toString().padLeft(2, '0')}/${end.month.toString().padLeft(2, '0')}';
+      return '$s - $e';
+    } catch (_) {
+      return '';
+    }
   }
 
   Future<List<Map<String, String>>> _loadSelectableGroups() async {
@@ -492,6 +710,16 @@ class _BudgetScreenState extends State<BudgetScreen> {
       if (remote.success &&
           remote.data != null &&
           remote.data!['data'] is List) {
+        final localGroups = await _storageService.readBudgetGroups();
+        final localIconMap = <String, String>{};
+        for (final g in localGroups) {
+          final k = (g['key'] ?? '').toString().trim().toLowerCase();
+          final icon = (g['iconKey'] ?? '').toString();
+          if (k.isNotEmpty && icon.runes.isNotEmpty && icon.runes.first > 0xFF) {
+            localIconMap[k] = icon;
+          }
+        }
+        
         existing = (remote.data!['data'] as List)
             .whereType<Map>()
             .map((entry) => Map<String, dynamic>.from(entry))
@@ -499,26 +727,28 @@ class _BudgetScreenState extends State<BudgetScreen> {
               (item) => item['isGlobal'] != true,
             ) // only user-created categories
             .map((item) {
+              final key = item['key']?.toString() ?? item['slug']?.toString() ?? item['id']?.toString() ?? '';
+              final localIcon = localIconMap[key.toLowerCase()];
               return <String, String>{
-                'key':
-                    item['key']?.toString() ??
-                    item['slug']?.toString() ??
-                    item['id']?.toString() ??
-                    '',
+                'key': key,
                 'label':
                     item['label']?.toString() ?? item['name']?.toString() ?? '',
                 'kind': item['kind']?.toString() ?? '',
+                'iconKey': localIcon ?? item['iconKey']?.toString() ?? '',
+                'color': item['color']?.toString() ?? '',
               };
             })
             .where(
-              (entry) => entry['key']!.isNotEmpty && entry['label']!.isNotEmpty,
+              (entry) => entry['key']!.isNotEmpty && entry['label']!.isNotEmpty && entry['kind'] != 'income',
             )
             .toList();
       } else {
         existing = await _storageService.readBudgetGroups();
+        existing = existing.where((g) => g['kind'] != 'income').toList();
       }
     } else {
       existing = await _storageService.readBudgetGroups();
+      existing = existing.where((g) => g['kind'] != 'income').toList();
     }
 
     return existing;
@@ -566,8 +796,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
     if (token == null || token.isEmpty) return null;
 
     final remote = await _financeApiService.getCategories(token: token);
-    if (!remote.success || remote.data == null || remote.data!['data'] is! List)
+    if (!remote.success || remote.data == null || remote.data!['data'] is! List) {
       return null;
+    }
 
     for (final entry in remote.data!['data'] as List) {
       if (entry is! Map) continue;
@@ -584,7 +815,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
     return null;
   }
 
-  String _slugifyGroupName(String value) {
+  String slugifyGroupName(String value) {
     final normalized = value.trim().toLowerCase();
     final buffer = StringBuffer();
     var lastWasDash = false;
@@ -607,131 +838,26 @@ class _BudgetScreenState extends State<BudgetScreen> {
     return result.isEmpty ? 'nhom-moi' : result;
   }
 
-  Future<Map<String, String>?> _showCreateGroupDialog() async {
-    final nameController = TextEditingController();
-    var selectedKind = 'expense';
-
-    try {
-      return await showDialog<Map<String, String>>(
-        context: context,
-        barrierDismissible: true,
-        builder: (dialogContext) {
-          void closeDialog([Map<String, String>? result]) {
-            FocusManager.instance.primaryFocus?.unfocus();
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!dialogContext.mounted) return;
-              Navigator.of(dialogContext).pop(result);
-            });
-          }
-
-          return AlertDialog(
-            backgroundColor: const Color(0xFF141414),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(24),
-            ),
-            title: Text(
-              'Thêm hạng mục mới',
-              style: GoogleFonts.manrope(
-                color: Colors.white,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            content: StatefulBuilder(
-              builder: (context, setDialogState) {
-                return SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextField(
-                        controller: nameController,
-                        style: GoogleFonts.manrope(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        decoration: InputDecoration(
-                          hintText: 'Nhập tên nhóm',
-                          hintStyle: GoogleFonts.manrope(
-                            color: Colors.white.withValues(alpha: 0.35),
-                          ),
-                          filled: true,
-                          fillColor: const Color(0xFF1C1C1E),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Chọn loại',
-                        style: GoogleFonts.manrope(
-                          color: Colors.white.withValues(alpha: 0.45),
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _KindChoiceButton(
-                              label: 'Khoản chi',
-                              selected: selectedKind == 'expense',
-                              color: const Color(0xFFFF4D4D),
-                              onTap: () => setDialogState(
-                                () => selectedKind = 'expense',
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _KindChoiceButton(
-                              label: 'Khoản thu',
-                              selected: selectedKind == 'income',
-                              color: const Color(0xFF2ECC71),
-                              onTap: () =>
-                                  setDialogState(() => selectedKind = 'income'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => closeDialog(),
-                child: const Text('Huỷ'),
-              ),
-              FilledButton(
-                onPressed: () {
-                  final name = nameController.text.trim();
-                  if (name.isEmpty) return;
-                  final key = _slugifyGroupName(name);
-                  closeDialog(<String, String>{
-                    'key': key,
-                    'label': name,
-                    'kind': selectedKind,
-                  });
-                },
-                child: const Text('Lưu'),
-              ),
-            ],
-          );
-        },
-      );
-    } finally {
-      nameController.dispose();
-    }
+  Future<Map<String, String>?> _showCreateGroupSheet() async {
+    if (!mounted) return null;
+    return showModalBottomSheet<Map<String, String>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CreateGroupSheet(
+        availableEmojis: availableEmojis,
+        slugify: slugifyGroupName,
+      ),
+    );
   }
+
 
   Future<void> _saveNewBudgetGroup({
     required String key,
     required String label,
     required String kind,
+    String? iconKey,
+    String? color,
   }) async {
     final token = await _sessionService.getToken();
     if (token != null && token.isNotEmpty) {
@@ -739,7 +865,8 @@ class _BudgetScreenState extends State<BudgetScreen> {
         token: token,
         name: label,
         kind: kind,
-        iconKey: key,
+        iconKey: iconKey ?? key,
+        color: color,
       );
     }
 
@@ -750,7 +877,13 @@ class _BudgetScreenState extends State<BudgetScreen> {
             (group['key'] ?? '').trim().toLowerCase() !=
             key.trim().toLowerCase(),
       ),
-      {'key': key, 'label': label, 'kind': kind},
+      {
+        'key': key, 
+        'label': label, 
+        'kind': kind,
+        'iconKey': ?iconKey,
+        'color': ?color,
+      },
     ];
     await _storageService.saveBudgetGroups(nextGroups);
     // Notify listeners so other screens (Budget list, Home) refresh
@@ -764,6 +897,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
     required String groupKey,
     required String monthKey,
     required bool isRepeat,
+    DateTimeRange? customRange,
+    String? iconKey,
+    String? color,
   }) async {
     final groups = await _loadSelectableGroups();
     final group = groups.firstWhere(
@@ -775,6 +911,23 @@ class _BudgetScreenState extends State<BudgetScreen> {
     final kind = group['kind']?.toString() ?? 'expense';
     final remoteCategoryId = await _resolveRemoteCategoryId(groupKey, label);
 
+    final finalIconKey = iconKey ?? group['iconKey']?.toString() ?? groupKey;
+    final finalColor = color ?? group['color']?.toString();
+
+    // Cập nhật lại cache nhóm (category) ngay lập tức nếu có thay đổi icon hoặc màu
+    if (iconKey != null || color != null) {
+      final updatedGroups = groups.map((g) {
+        if (g['key'] == groupKey) {
+          final nextGroup = Map<String, String>.from(g);
+          if (iconKey != null) nextGroup['iconKey'] = iconKey;
+          if (color != null) nextGroup['color'] = color;
+          return nextGroup;
+        }
+        return g;
+      }).toList();
+      await _storageService.saveBudgetGroups(updatedGroups);
+    }
+
     final token = await _sessionService.getToken();
     if (token != null && token.isNotEmpty) {
       final remoteResult = await _financeApiService.upsertBudget(
@@ -785,8 +938,11 @@ class _BudgetScreenState extends State<BudgetScreen> {
         categoryId: remoteCategoryId,
         slug: groupKey,
         kind: kind,
-        iconKey: groupKey,
+        iconKey: finalIconKey,
+        color: finalColor,
         isRepeat: isRepeat,
+        startDate: customRange != null ? DateFormat('yyyy-MM-dd').format(customRange.start) : null,
+        endDate: customRange != null ? DateFormat('yyyy-MM-dd').format(customRange.end) : null,
       );
       if (remoteResult.success) {
         await _loadData();
@@ -801,17 +957,19 @@ class _BudgetScreenState extends State<BudgetScreen> {
       'name': label,
       'limit': limitAmount,
       'spent': 0,
-      'iconKey': groupKey,
+      'iconKey': iconKey,
       'monthKey': monthKey,
       'isRepeat': isRepeat,
       'createdAt': now,
       'updatedAt': now,
+      if (customRange != null) 'startDate': DateFormat('yyyy-MM-dd').format(customRange.start),
+      if (customRange != null) 'endDate': DateFormat('yyyy-MM-dd').format(customRange.end),
     });
     await _storageService.saveBudgetItems(items);
     await _loadData();
   }
 
-  Future<String?> _showGroupPicker() async {
+  Future<dynamic> _showGroupPicker(List<dynamic> targetBudgets) async {
     final groups = await _loadSelectableGroups();
     if (!mounted) return null;
 
@@ -863,11 +1021,39 @@ class _BudgetScreenState extends State<BudgetScreen> {
                             final key = group['key'] ?? '';
                             final label = group['label'] ?? key;
                             final kind = group['kind'];
-                            return ListTile(
-                              onTap: () => Navigator.pop(sheetContext, key),
-                              leading: CircleAvatar(
+                            
+                            final isBudgeted = targetBudgets.any((b) {
+                              final bKey = (b['categoryKey'] ?? b['category_key'] ?? b['iconKey'] ?? '')?.toString().trim();
+                              final bSlug = (b['categorySlug'] ?? b['category_slug'] ?? '')?.toString().trim();
+                              final categoryInfo = b['category'] ?? {};
+                              final catKey = categoryInfo['key']?.toString().trim() ?? '';
+                              return (bKey == key || bSlug == key || catKey == key);
+                            });
+                            
+                            final existingBudget = isBudgeted ? targetBudgets.firstWhere((b) {
+                              final bKey = (b['categoryKey'] ?? b['category_key'] ?? b['iconKey'] ?? '')?.toString().trim();
+                              final bSlug = (b['categorySlug'] ?? b['category_slug'] ?? '')?.toString().trim();
+                              final categoryInfo = b['category'] ?? {};
+                              final catKey = categoryInfo['key']?.toString().trim() ?? '';
+                              return (bKey == key || bSlug == key || catKey == key);
+                            }, orElse: () => <String, dynamic>{}) : null;
+                            return Opacity(
+                              opacity: isBudgeted ? 0.3 : 1.0,
+                              child: ListTile(
+                                onTap: () {
+                                  if (isBudgeted) {
+                                    Navigator.pop(sheetContext, {'action': 'edit', 'budget': existingBudget});
+                                  } else {
+                                    Navigator.pop(sheetContext, key);
+                                  }
+                                },
+                                leading: CircleAvatar(
                                 backgroundColor: Colors.white10,
-                                child: Text(label.isNotEmpty ? label[0] : '?'),
+                                child: buildCategoryWidget(
+                                  (group['iconKey']?.toString() ?? '').isNotEmpty
+                                      ? group['iconKey'].toString()
+                                      : (label.isNotEmpty ? label[0] : '?'),
+                                ),
                               ),
                               title: Text(
                                 label,
@@ -883,7 +1069,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
-                              trailing: IconButton(
+                              trailing: isBudgeted ? null : IconButton(
                                 tooltip: 'Xóa hạng mục',
                                 icon: const Icon(
                                   Icons.delete_outline,
@@ -949,8 +1135,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                   );
                                 },
                               ),
-                            );
-                          }).toList(),
+                            ),
+                          );
+                        }).toList(),
                         ),
                       ),
                     ),
@@ -986,28 +1173,47 @@ class _BudgetScreenState extends State<BudgetScreen> {
     );
   }
 
-  Future<String?> _showGroupPickerWithCreate() async {
-    final selected = await _showGroupPicker();
+  Future<dynamic> _showGroupPickerWithCreate(String monthKey) async {
+    List<dynamic> targetBudgets = [];
+    final token = await _sessionService.getToken();
+    if (token != null && token.isNotEmpty) {
+      try {
+        final res = await _financeApiService.getBudgetDashboard(
+          token: token,
+          monthKey: monthKey,
+        );
+        if (res.success && res.data != null) {
+          final rawItems = res.data!['items'];
+          if (rawItems is List) {
+            targetBudgets = rawItems.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+          }
+        }
+      } catch (_) {}
+    }
+
+    final selected = await _showGroupPicker(targetBudgets);
     if (selected == '__create_new__') {
-      final created = await _showCreateGroupDialog();
+      final created = await _showCreateGroupSheet();
       if (created == null) return null;
       await _saveNewBudgetGroup(
         key: created['key'] ?? '',
         label: created['label'] ?? '',
         kind: created['kind'] ?? 'expense',
+        iconKey: created['iconKey'],
+        color: created['color'],
       );
       return created['key'];
     }
     return selected;
   }
 
-  Future<_BudgetPeriodChoice?> _showBudgetPeriodPicker({
-    required _BudgetPeriodChoice currentSelection,
+  Future<BudgetPeriodChoice?> _showBudgetPeriodPicker({
+    required BudgetPeriodChoice currentSelection,
   }) async {
     final now = DateTime.now();
     final choices = _buildBudgetPeriodChoices(now);
 
-    return showModalBottomSheet<_BudgetPeriodChoice>(
+    return showModalBottomSheet<BudgetPeriodChoice>(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF141414),
@@ -1054,13 +1260,14 @@ class _BudgetScreenState extends State<BudgetScreen> {
                       onTap: () async {
                         if (choice.key == 'custom') {
                           final navigator = Navigator.of(sheetContext);
+                          final today = DateTime(now.year, now.month, now.day);
                           final pickedRange = await showDateRangePicker(
                             context: sheetContext,
-                            firstDate: DateTime(now.year - 3, 1, 1),
+                            firstDate: today,
                             lastDate: DateTime(now.year + 3, 12, 31),
                             initialDateRange: DateTimeRange(
-                              start: now,
-                              end: now,
+                              start: today,
+                              end: today,
                             ),
                             helpText: 'Chọn khoảng thời gian',
                             saveText: 'Chọn',
@@ -1069,7 +1276,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                           if (pickedRange == null) return;
                           if (!navigator.mounted) return;
                           navigator.pop(
-                            _BudgetPeriodChoice(
+                            BudgetPeriodChoice(
                               key: 'custom',
                               label: 'Tùy chỉnh',
                               rangeText: _formatRange(
@@ -1078,6 +1285,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                               ),
                               monthKey:
                                   '${pickedRange.start.year.toString().padLeft(4, '0')}-${pickedRange.start.month.toString().padLeft(2, '0')}',
+                              customRange: pickedRange,
                             ),
                           );
                           return;
@@ -1152,7 +1360,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
     String? initialMonthKey,
     int? initialAmount,
     bool initialRepeat = false,
-    _BudgetPeriodChoice? initialPeriod,
+    BudgetPeriodChoice? initialPeriod,
   }) async {
     final picked = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
@@ -1162,27 +1370,40 @@ class _BudgetScreenState extends State<BudgetScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
       builder: (sheetContext) {
-        return _BudgetFormSheet(
-          title: title,
-          buttonLabel: buttonLabel,
-          initialGroupKey: initialGroupKey,
-          initialMonthKey: initialMonthKey,
-          initialAmount: initialAmount,
-          initialRepeat: initialRepeat,
-          initialPeriod: initialPeriod,
-          loadGroups: _loadSelectableGroups,
-          pickGroup: _showGroupPickerWithCreate,
-          pickPeriod: (currentSelection) =>
-              _showBudgetPeriodPicker(currentSelection: currentSelection),
+        return SafeKeyboardPadding(
+          child: BudgetFormSheet(
+            title: title,
+            buttonLabel: buttonLabel,
+            initialGroupKey: initialGroupKey,
+            initialMonthKey: initialMonthKey,
+            initialAmount: initialAmount,
+            initialRepeat: initialRepeat,
+            initialPeriod: initialPeriod,
+            loadGroups: _loadSelectableGroups,
+            pickGroup: _showGroupPickerWithCreate,
+            pickPeriod: (currentSelection) =>
+                _showBudgetPeriodPicker(currentSelection: currentSelection),
+          ),
         );
       },
     );
 
     if (picked == null) return;
+    if (picked['action'] == 'edit') {
+      final budget = picked['budget'];
+      if (budget is Map<String, dynamic>) {
+        _showEditBudgetModal(budget);
+      }
+      return;
+    }
+
     final amount = _parseAmount(picked['amount']);
     final groupKey = picked['groupKey']?.toString() ?? 'food';
     final monthKey = picked['monthKey']?.toString() ?? _currentMonthKey();
     final isRepeat = picked['isRepeat'] == true;
+    final customRange = picked['customRange'] as DateTimeRange?;
+    final iconKey = picked['iconKey']?.toString();
+    final color = picked['color']?.toString();
 
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -1191,15 +1412,79 @@ class _BudgetScreenState extends State<BudgetScreen> {
       limitAmount: amount,
       monthKey: monthKey,
       isRepeat: isRepeat,
+      customRange: customRange,
+      iconKey: iconKey,
+      color: color,
     );
     if (!mounted) return;
     messenger.showSnackBar(SnackBar(content: Text('$buttonLabel thành công')));
   }
 
-  // NOTE: `_showItemDialog` has been removed from the UI. The function kept
-  // here previously allowed creating budget items from the UI; that flow is
-  // intentionally disabled. If you want to remove this code entirely, we can
-  // delete this function in a follow-up change.
+  Future<void> _showEditBudgetModal(Map<String, dynamic> existingBudget) async {
+    final currentName = existingBudget['category']?['name']?.toString() ?? existingBudget['categoryName']?.toString() ?? existingBudget['name']?.toString() ?? '';
+    final currentLimit = int.tryParse(existingBudget['limitAmount']?.toString() ?? existingBudget['limit']?.toString() ?? '0') ?? 0;
+    
+    DateTimeRange selectedPeriod;
+    if (existingBudget['startDate'] != null && existingBudget['endDate'] != null) {
+      selectedPeriod = DateTimeRange(
+        start: DateTime.parse(existingBudget['startDate'].toString()).toLocal(),
+        end: DateTime.parse(existingBudget['endDate'].toString()).toLocal(),
+      );
+    } else {
+      selectedPeriod = _rangeFromMonthKey(existingBudget['monthKey']?.toString() ?? _currentMonthKey());
+    }
+
+    if (!mounted) return;
+    final result = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF141414),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (dialogContext) {
+        return SafeKeyboardPadding(
+          child: BudgetEditSheet(
+            initialName: currentName,
+            initialAmount: currentLimit,
+            initialPeriod: selectedPeriod,
+            initialIconKey: existingBudget['iconKey']?.toString() ?? existingBudget['category']?['iconKey']?.toString() ?? existingBudget['categoryIconKey']?.toString(),
+          ),
+        );
+      },
+    );
+
+    if (result == null) return;
+    final name = result['name']?.toString() ?? '';
+    final amount = result['amount'] is int
+        ? result['amount'] as int
+        : int.tryParse(result['amount']?.toString() ?? '') ?? 0;
+    final period = result['period'] is DateTimeRange
+        ? result['period'] as DateTimeRange
+        : _rangeFromMonthKey(_currentMonthKey());
+    final pickedIconKey = result['iconKey']?.toString();
+    if (name.isEmpty || amount <= 0) return;
+    
+    final idStr = existingBudget['id']?.toString() ?? '';
+    if (idStr.isEmpty) return;
+    
+    final token = await _sessionService.getToken();
+    if (token != null && token.isNotEmpty) {
+      final res = await _financeApiService.upsertBudget(
+        token: token,
+        id: idStr,
+        name: name,
+        limitAmount: amount,
+        monthKey: '${period.start.year.toString().padLeft(4, '0')}-${period.start.month.toString().padLeft(2, '0')}',
+        startDate: DateFormat('yyyy-MM-dd').format(period.start),
+        endDate: DateFormat('yyyy-MM-dd').format(period.end),
+        iconKey: pickedIconKey,
+      );
+      if (res.success) {
+        await _loadData();
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -1220,12 +1505,23 @@ class _BudgetScreenState extends State<BudgetScreen> {
   }
 
   Future<void> _showBudgetDialog() async {
-    final initialPeriod = _BudgetPeriodChoice(
-      key: 'month',
-      label: 'Tháng này',
-      rangeText: _monthRangeFromKey(_currentMonthKey()),
-      monthKey: _currentMonthKey(),
-    );
+    BudgetPeriodChoice initialPeriod;
+    if (_dashboardPeriodChoice == 'week') {
+      initialPeriod = BudgetPeriodChoice(
+        key: 'custom',
+        label: 'Tùy chỉnh',
+        rangeText: '${_currentDashboardRange.start.day.toString().padLeft(2, '0')}/${_currentDashboardRange.start.month.toString().padLeft(2, '0')} - ${_currentDashboardRange.end.day.toString().padLeft(2, '0')}/${_currentDashboardRange.end.month.toString().padLeft(2, '0')}',
+        monthKey: _currentMonthKey(),
+        customRange: _currentDashboardRange,
+      );
+    } else {
+      initialPeriod = BudgetPeriodChoice(
+        key: 'month',
+        label: 'Tháng này',
+        rangeText: _monthRangeFromKey(_currentMonthKey()),
+        monthKey: _currentMonthKey(),
+      );
+    }
 
     await _showBudgetFormDialog(
       title: _monthlyBudget > 0 ? 'Cập nhật ngân sách' : 'Thêm ngân sách',
@@ -1275,21 +1571,92 @@ class _BudgetScreenState extends State<BudgetScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      'Tháng này',
-                      style: GoogleFonts.manrope(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      height: 3,
-                      width: 92,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.all(Radius.circular(999)),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _dashboardPeriodChoice,
+                              icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                              dropdownColor: const Color(0xFF181818),
+                              borderRadius: BorderRadius.circular(16),
+                              style: GoogleFonts.manrope(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                              ),
+                              onChanged: (String? newValue) {
+                                if (newValue != null && newValue != _dashboardPeriodChoice) {
+                                  setState(() {
+                                    _dashboardPeriodChoice = newValue;
+                                  });
+                                  _applyDashboardFilter();
+                                }
+                              },
+                              items: const [
+                                DropdownMenuItem(value: 'week', child: Text('Tuần này')),
+                                DropdownMenuItem(value: 'month', child: Text('Tháng này')),
+                                DropdownMenuItem(value: 'year', child: Text('Năm nay')),
+                                DropdownMenuItem(value: 'custom', child: Text('Tùy chỉnh')),
+                                DropdownMenuItem(value: 'all', child: Text('Tất cả')),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.history, color: Colors.white),
+                            tooltip: 'Lịch sử ngân sách',
+                            onPressed: () async {
+                              final result = await Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const BudgetHistoryScreen(),
+                                ),
+                              );
+                              if (!mounted) return;
+                              if (result is Map && result['action'] == 'reuse') {
+                                final item = result['item'];
+                                final limitAmount = int.tryParse(item['limitAmount']?.toString() ?? '0') ?? 0;
+                                final groupKey = item['category']?['key']?.toString() 
+                                              ?? item['categorySlug']?.toString() 
+                                              ?? item['iconKey']?.toString()
+                                              ?? 'other';
+                                
+                                final startDateStr = item['startDate']?.toString();
+                                final endDateStr = item['endDate']?.toString();
+                                BudgetPeriodChoice? reusePeriodChoice;
+                                
+                                if (startDateStr != null && endDateStr != null) {
+                                  final start = DateTime.tryParse(startDateStr)?.toLocal();
+                                  final end = DateTime.tryParse(endDateStr)?.toLocal();
+                                  if (start != null && end != null) {
+                                    final durationDays = end.difference(start).inDays + 1;
+                                    final now = DateTime.now();
+                                    final newStart = DateTime(now.year, now.month, now.day);
+                                    final newEnd = newStart.add(Duration(days: durationDays - 1)).add(const Duration(hours: 23, minutes: 59, seconds: 59));
+                                    final mKey = '${newStart.year.toString().padLeft(4, '0')}-${newStart.month.toString().padLeft(2, '0')}';
+                                    reusePeriodChoice = BudgetPeriodChoice(
+                                      key: 'custom',
+                                      label: 'Tùy chỉnh',
+                                      rangeText: _formatRange(newStart, newEnd),
+                                      monthKey: mKey,
+                                      customRange: DateTimeRange(start: newStart, end: newEnd),
+                                    );
+                                  }
+                                }
+
+                                _showBudgetFormDialog(
+                                  title: 'Tái sử dụng ngân sách',
+                                  buttonLabel: 'Lưu ngân sách',
+                                  initialGroupKey: groupKey,
+                                  initialAmount: limitAmount,
+                                  initialMonthKey: reusePeriodChoice?.monthKey,
+                                  initialPeriod: reusePeriodChoice,
+                                );
+                              }
+                            },
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 34),
@@ -1314,7 +1681,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                   child: SizedBox(
                                     height: 170,
                                     child: CustomPaint(
-                                      painter: _HalfArcPainter(
+                                      painter: HalfArcPainter(
                                         progress: _progress,
                                         color: gaugeColor,
                                         backgroundColor: const Color(
@@ -1356,7 +1723,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                   child: Row(
                                     children: [
                                       Expanded(
-                                        child: _MiniMetric(
+                                        child: MiniMetric(
                                           value: _formatCompact(_monthlyBudget),
                                           label: 'Tổng ngân sách',
                                         ),
@@ -1369,7 +1736,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                         ),
                                       ),
                                       Expanded(
-                                        child: _MiniMetric(
+                                        child: MiniMetric(
                                           value: _formatCompact(_totalSpent),
                                           label: 'Tổng đã chi',
                                         ),
@@ -1382,9 +1749,11 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                         ),
                                       ),
                                       Expanded(
-                                        child: _MiniMetric(
-                                          value: '$_daysLeft ngày',
-                                          label: 'Đến cuối tháng',
+                                        child: MiniMetric(
+                                          value: _dashboardPeriodChoice == 'all' ? '∞' : '$_daysLeft ngày',
+                                          label: _dashboardPeriodChoice == 'week' ? 'Đến cuối tuần' :
+                                                 _dashboardPeriodChoice == 'year' ? 'Đến cuối năm' :
+                                                 _dashboardPeriodChoice == 'all' ? 'Không giới hạn' : 'Đến cuối tháng',
                                         ),
                                       ),
                                     ],
@@ -1420,7 +1789,78 @@ class _BudgetScreenState extends State<BudgetScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 18),
+                    const SizedBox(height: 14),
+
+                    // ── Banner: Tiền an toàn mỗi ngày ──
+                    if (_dailySafeToSpend > 0 && _dashboardPeriodChoice != 'all')
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 14),
+                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              const Color(0xFF1A2E1A),
+                              const Color(0xFF102010),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: const Color(0xFF34C759).withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF34C759).withValues(alpha: 0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.tips_and_updates_rounded,
+                                color: Color(0xFF34C759),
+                                size: 22,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Gợi ý chi tiêu hôm nay',
+                                    style: GoogleFonts.manrope(
+                                      color: const Color(0xFF34C759),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Mỗi ngày tối đa nên tiêu: ${_formatCompact(_dailySafeToSpend)}',
+                                    style: GoogleFonts.manrope(
+                                      color: Colors.white,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Còn lại ${_formatCompact(_remaining)} trong $_daysLeft ngày tới',
+                                    style: GoogleFonts.manrope(
+                                      color: Colors.white.withValues(alpha: 0.5),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -1476,33 +1916,57 @@ class _BudgetScreenState extends State<BudgetScreen> {
                             : '${(ratio * 100).round()}%';
                         final isOverBudget = limit > 0 && spent >= limit;
                         final iconKey = item['iconKey']?.toString();
-                        final iconColor = _iconColorForKey(iconKey);
+                        final iconColor = parseColor(iconKey);
 
                         final categoryKey =
-                            (item['iconKey'] ??
-                                    item['categoryKey'] ??
+                            (item['categoryKey'] ??
                                     item['key'])
                                 ?.toString() ??
                             '';
+                            
+                        final isFuture = () {
+                          final now = DateTime.now();
+                          if (item['startDate'] != null) {
+                            final startDate = DateTime.tryParse(item['startDate'].toString());
+                            if (startDate != null) {
+                              final startDay = DateTime(startDate.year, startDate.month, startDate.day);
+                              final today = DateTime(now.year, now.month, now.day);
+                              if (startDay.isAfter(today)) return true;
+                            }
+                          } else {
+                            final mKey = item['monthKey']?.toString() ?? '';
+                            final currentMKey = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
+                            if (mKey.isNotEmpty && mKey.compareTo(currentMKey) > 0) return true;
+                          }
+                          return false;
+                        }();
+                        
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 14),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(24),
-                            onTap: () async {
-                              final result = await Navigator.of(context)
+                          child: Opacity(
+                            opacity: isFuture ? 0.4 : 1.0,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(24),
+                              onTap: () async {
+                                if (isFuture) {
+                                  await _showEditBudgetModal(item);
+                                  return;
+                                }
+                                final result = await Navigator.of(context)
                                   .push<bool>(
                                     MaterialPageRoute(
                                       builder: (_) => BudgetDetailScreen(
+                                        item: item,
                                         categoryKey: categoryKey,
                                       ),
                                     ),
                                   );
-                              if (result == true) {
-                                // if changed in detail screen, reload list
-                                await _loadData();
-                              }
-                            },
-                            child: Container(
+                                if (result == true) {
+                                  // if changed in detail screen, reload list
+                                  await _loadData();
+                                }
+                              },
+                              child: Container(
                               padding: const EdgeInsets.all(18),
                               decoration: BoxDecoration(
                                 color: const Color(0xFF131313),
@@ -1521,17 +1985,14 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                       Container(
                                         width: 44,
                                         height: 44,
+                                        alignment: Alignment.center,
                                         decoration: BoxDecoration(
                                           color: iconColor.withValues(
                                             alpha: 0.18,
                                           ),
                                           shape: BoxShape.circle,
                                         ),
-                                        child: Icon(
-                                          _iconForKey(iconKey),
-                                          color: iconColor,
-                                          size: 22,
-                                        ),
+                                        child: buildCategoryWidget(iconKey, size: 22),
                                       ),
                                       const SizedBox(width: 14),
                                       Expanded(
@@ -1583,34 +2044,48 @@ class _BudgetScreenState extends State<BudgetScreen> {
                                       value: progress,
                                       backgroundColor: const Color(0xFF2B2B2E),
                                       valueColor: AlwaysStoppedAnimation<Color>(
-                                        isOverBudget
-                                            ? const Color(0xFFFF4D4D)
-                                            : iconColor,
+                                        _progressColor(ratio),
                                       ),
                                     ),
                                   ),
                                   const SizedBox(height: 12),
                                   Row(
                                     children: [
-                                      Text(
-                                        'Đã chi ${_formatCompact(spent)} / ${_formatCompact(limit)}',
-                                        style: GoogleFonts.manrope(
-                                          color: Colors.white.withValues(
-                                            alpha: 0.45,
-                                          ),
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Đã chi ${_formatCompact(spent)} / ${_formatCompact(limit)}',
+                                              style: GoogleFonts.manrope(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.45,
+                                                ),
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              _buildDurationText(item),
+                                              style: GoogleFonts.manrope(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.35,
+                                                ),
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
                                         ),
                                       ),
-                                      const Spacer(),
+                                      const SizedBox(width: 8),
                                       Text(
                                         percentLabel,
                                         style: GoogleFonts.manrope(
-                                          color: isOverBudget
-                                              ? const Color(0xFFFF6B6B)
-                                              : Colors.white.withValues(
-                                                  alpha: 0.45,
-                                                ),
+                                          color: _progressColor(ratio),
                                           fontSize: 13,
                                           fontWeight: FontWeight.w700,
                                         ),
@@ -1621,8 +2096,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
                               ),
                             ),
                           ),
-                        );
-                      }),
+                        ),
+                      );
+                    }),
                   ],
                 ),
               ),
@@ -1631,1398 +2107,18 @@ class _BudgetScreenState extends State<BudgetScreen> {
   }
 }
 
-class _BudgetFormSheet extends StatefulWidget {
-  const _BudgetFormSheet({
-    required this.title,
-    required this.buttonLabel,
-    required this.loadGroups,
-    required this.pickGroup,
-    required this.pickPeriod,
-    this.initialGroupKey,
-    this.initialMonthKey,
-    this.initialAmount,
-    this.initialRepeat = false,
-    this.initialPeriod,
-  });
 
-  final String title;
-  final String buttonLabel;
-  final Future<List<Map<String, String>>> Function() loadGroups;
-  final Future<String?> Function() pickGroup;
-  final Future<_BudgetPeriodChoice?> Function(
-    _BudgetPeriodChoice currentSelection,
-  )
-  pickPeriod;
-  final String? initialGroupKey;
-  final String? initialMonthKey;
-  final int? initialAmount;
-  final bool initialRepeat;
-  final _BudgetPeriodChoice? initialPeriod;
 
-  @override
-  State<_BudgetFormSheet> createState() => _BudgetFormSheetState();
-}
 
-class _BudgetFormSheetState extends State<_BudgetFormSheet> {
-  late final TextEditingController _amountController;
-  List<Map<String, String>> _groups = <Map<String, String>>[];
-  String _selectedGroupKey = '';
-  bool _groupTouched = false;
-  bool _isFormattingAmount = false;
-  _BudgetPeriodChoice? _selectedPeriod;
-  bool _isRepeat = false;
-  bool _isLoading = true;
 
-  IconData _iconDataForKey(String? key) {
-    switch (key) {
-      case 'home':
-        return Icons.home_outlined;
-      case 'food':
-        return Icons.restaurant_outlined;
-      case 'car':
-        return Icons.directions_car_outlined;
-      case 'shop':
-        return Icons.shopping_bag_outlined;
-      case 'health':
-        return Icons.medical_services_outlined;
-      default:
-        return Icons.category_outlined;
-    }
-  }
 
-  Color _iconColorForKey(String? key) {
-    switch (key) {
-      case 'home':
-        return const Color(0xFF4E8DFF);
-      case 'food':
-        return const Color(0xFFFFC04D);
-      case 'car':
-        return const Color(0xFF5DD6FF);
-      case 'shop':
-        return const Color(0xFFBF5AF2);
-      case 'health':
-        return const Color(0xFFFF5C8A);
-      default:
-        return const Color(0xFF8E8E93);
-    }
-  }
 
-  String _groupKindLabel(String? kind) {
-    switch (kind) {
-      case 'income':
-        return 'Khoản thu';
-      case 'expense':
-        return 'Khoản chi';
-      default:
-        return 'Chưa chọn';
-    }
-  }
-
-  Color _groupKindColor(String? kind) {
-    switch (kind) {
-      case 'income':
-        return const Color(0xFF2ECC71);
-      case 'expense':
-        return const Color(0xFFFF4D4D);
-      default:
-        return const Color(0xFF8E8E93);
-    }
-  }
-
-  bool get _hasSelectedGroup => _selectedGroupKey.trim().isNotEmpty;
-
-  String _amountDigitsOnly() {
-    return _amountController.text.replaceAll(RegExp(r'[^0-9]'), '');
-  }
-
-  String _formatAmountText(String rawDigits) {
-    if (rawDigits.isEmpty) return '';
-    final value = int.tryParse(rawDigits) ?? 0;
-    return NumberFormat.decimalPattern('vi_VN').format(value);
-  }
-
-  double _amountFontSize() {
-    final length = _amountDigitsOnly().length;
-    if (length <= 6) return 32;
-    if (length <= 8) return 28;
-    if (length <= 10) return 24;
-    return 20;
-  }
-
-  void _handleAmountChanged() {
-    if (!mounted || _isFormattingAmount) return;
-
-    final rawDigits = _amountDigitsOnly();
-    final formatted = _formatAmountText(rawDigits);
-    if (_amountController.text == formatted) {
-      setState(() {});
-      return;
-    }
-
-    _isFormattingAmount = true;
-    _amountController.value = TextEditingValue(
-      text: formatted,
-      selection: TextSelection.collapsed(offset: formatted.length),
-    );
-    _isFormattingAmount = false;
-    setState(() {});
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _amountController = TextEditingController(
-      text: widget.initialAmount != null && widget.initialAmount! > 0
-          ? _formatAmountText(widget.initialAmount.toString())
-          : '',
-    );
-    _isRepeat = widget.initialRepeat;
-    _selectedGroupKey = widget.initialGroupKey?.trim() ?? '';
-    _groupTouched = _selectedGroupKey.isNotEmpty;
-    final initialMonthKey = widget.initialMonthKey ?? DateTime.now().toString();
-    _selectedPeriod =
-        widget.initialPeriod ??
-        _BudgetPeriodChoice(
-          key: 'month',
-          label: 'Tháng này',
-          rangeText: _monthRangeFromKey(initialMonthKey),
-          monthKey: _currentMonthKeyFromKey(initialMonthKey),
-        );
-    _amountController.addListener(_handleAmountChanged);
-    _loadGroups();
-  }
-
-  @override
-  void dispose() {
-    _amountController.removeListener(_handleAmountChanged);
-    _amountController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadGroups() async {
-    final groups = await widget.loadGroups();
-    if (!mounted) return;
-    setState(() {
-      _groups = groups;
-      if (_selectedGroupKey.trim().isEmpty && _groups.isNotEmpty) {
-        _selectedGroupKey = _groups.first['key']?.trim() ?? '';
-      }
-      _isLoading = false;
-    });
-  }
-
-  String _currentMonthKeyFromKey(String monthKey) {
-    final parts = monthKey.split('-');
-    if (parts.length == 2) {
-      final year = int.tryParse(parts[0]) ?? DateTime.now().year;
-      final month = int.tryParse(parts[1]) ?? DateTime.now().month;
-      return '${year.toString().padLeft(4, '0')}-${month.toString().padLeft(2, '0')}';
-    }
-    final now = DateTime.now();
-    return '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
-  }
-
-  String _monthRangeFromKey(String monthKey) {
-    final parts = monthKey.split('-');
-    if (parts.length != 2) return monthKey;
-    final year = int.tryParse(parts[0]) ?? DateTime.now().year;
-    final month = int.tryParse(parts[1]) ?? DateTime.now().month;
-    final start = DateTime(year, month, 1);
-    final end = DateTime(year, month + 1, 0);
-    String fmt(DateTime date) =>
-        '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}';
-    return '${fmt(start)} - ${fmt(end)}';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final currentGroup = _groupTouched && _hasSelectedGroup
-        ? _groups.firstWhere(
-            (group) => group['key'] == _selectedGroupKey,
-            orElse: () => <String, String>{
-              'key': _selectedGroupKey,
-              'label': _selectedGroupKey,
-              'kind': 'expense',
-            },
-          )
-        : <String, String>{};
-    final groupLabel = _groupTouched && _hasSelectedGroup
-        ? (currentGroup['label']?.toString().trim().isNotEmpty == true
-              ? currentGroup['label']!.trim()
-              : _selectedGroupKey)
-        : 'Chọn hạng mục';
-    final groupKind = _groupTouched && _hasSelectedGroup
-        ? currentGroup['kind']?.toString() ?? 'expense'
-        : 'unknown';
-    final groupIcon = _groupTouched && _hasSelectedGroup
-        ? _iconDataForKey(_selectedGroupKey)
-        : Icons.category_outlined;
-    final groupColor = _groupTouched && _hasSelectedGroup
-        ? _iconColorForKey(_selectedGroupKey)
-        : const Color(0xFF8E8E93);
-    final period = _selectedPeriod!;
-
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 18,
-          right: 18,
-          top: 18,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 18,
-        ),
-        child: _isLoading
-            ? const SizedBox(
-                height: 260,
-                child: Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                ),
-              )
-            : SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 44,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      widget.title,
-                      style: GoogleFonts.manrope(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Chọn nhóm, nhập số tiền và thời gian áp dụng.',
-                      style: GoogleFonts.manrope(
-                        color: Colors.white.withValues(alpha: 0.45),
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C1C1E),
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.04),
-                        ),
-                      ),
-                      child: Column(
-                        children: [
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 6,
-                            ),
-                            leading: Container(
-                              width: 46,
-                              height: 46,
-                              decoration: BoxDecoration(
-                                color: groupColor.withValues(alpha: 0.18),
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                groupIcon,
-                                color: groupColor,
-                                size: 22,
-                              ),
-                            ),
-                            title: Text(
-                              groupLabel,
-                              style: GoogleFonts.manrope(
-                                color: _hasSelectedGroup
-                                    ? Colors.white
-                                    : Colors.white.withValues(alpha: 0.35),
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: _hasSelectedGroup
-                                ? Text(
-                                    _groupKindLabel(groupKind),
-                                    style: GoogleFonts.manrope(
-                                      color: _groupKindColor(groupKind),
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  )
-                                : null,
-                            trailing: const Icon(
-                              Icons.chevron_right_rounded,
-                              color: Colors.white54,
-                            ),
-                            onTap: () async {
-                              final pickedGroup = await widget.pickGroup();
-                              if (pickedGroup == null || !mounted) return;
-                              final groups = await widget.loadGroups();
-                              if (!mounted) return;
-                              setState(() {
-                                _groups = groups;
-                                _selectedGroupKey = pickedGroup;
-                                _groupTouched = true;
-                              });
-                            },
-                          ),
-                          Divider(
-                            height: 1,
-                            color: Colors.white.withValues(alpha: 0.06),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Text(
-                                  'Số tiền',
-                                  style: GoogleFonts.manrope(
-                                    color: Colors.white.withValues(alpha: 0.45),
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Row(
-                                  crossAxisAlignment: CrossAxisAlignment.center,
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 12,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(
-                                          color: Colors.white.withValues(
-                                            alpha: 0.18,
-                                          ),
-                                        ),
-                                      ),
-                                      child: Text(
-                                        'VND',
-                                        style: GoogleFonts.manrope(
-                                          color: Colors.white,
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Expanded(
-                                      child: TextField(
-                                        controller: _amountController,
-                                        keyboardType: TextInputType.number,
-                                        inputFormatters: [
-                                          FilteringTextInputFormatter
-                                              .digitsOnly,
-                                          LengthLimitingTextInputFormatter(12),
-                                        ],
-                                        style: GoogleFonts.manrope(
-                                          color: Colors.white,
-                                          fontSize: _amountFontSize(),
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                        maxLines: 1,
-                                        textAlign: TextAlign.left,
-                                        textAlignVertical:
-                                            TextAlignVertical.center,
-                                        decoration: InputDecoration(
-                                          hintText: 'Nhập giá tiền',
-                                          hintStyle: GoogleFonts.manrope(
-                                            color: Colors.white.withValues(
-                                              alpha: 0.28,
-                                            ),
-                                            fontSize: 24,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                          suffixText: 'đ',
-                                          suffixStyle: GoogleFonts.manrope(
-                                            color: Colors.white.withValues(
-                                              alpha: 0.70,
-                                            ),
-                                            fontSize: 24,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                          border: InputBorder.none,
-                                          isDense: true,
-                                          contentPadding: EdgeInsets.zero,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                          Divider(
-                            height: 1,
-                            color: Colors.white.withValues(alpha: 0.06),
-                          ),
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 6,
-                            ),
-                            leading: const Icon(
-                              Icons.calendar_month_outlined,
-                              color: Colors.white,
-                            ),
-                            title: Text(
-                              period.label,
-                              style: GoogleFonts.manrope(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            subtitle: Text(
-                              period.rangeText,
-                              style: GoogleFonts.manrope(
-                                color: Colors.white.withValues(alpha: 0.45),
-                                fontSize: 12,
-                              ),
-                            ),
-                            trailing: const Icon(
-                              Icons.chevron_right_rounded,
-                              color: Colors.white54,
-                            ),
-                            onTap: () async {
-                              final pickedPeriod = await widget.pickPeriod(
-                                period,
-                              );
-                              if (pickedPeriod == null || !mounted) return;
-                              setState(() => _selectedPeriod = pickedPeriod);
-                            },
-                          ),
-                          Divider(
-                            height: 1,
-                            color: Colors.white.withValues(alpha: 0.06),
-                          ),
-                          SwitchListTile.adaptive(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 4,
-                            ),
-                            value: _isRepeat,
-                            onChanged: (value) =>
-                                setState(() => _isRepeat = value),
-                            activeThumbColor: const Color(0xFF2DBC4D),
-                            title: Text(
-                              'Lặp lại ngân sách này',
-                              style: GoogleFonts.manrope(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: Text(
-                              'Ngân sách được tự động lặp lại ở kỳ hạn tiếp theo.',
-                              style: GoogleFonts.manrope(
-                                color: Colors.white.withValues(alpha: 0.45),
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      height: 54,
-                      child: ElevatedButton(
-                        onPressed: () {
-                          final effectiveGroupKey =
-                              _selectedGroupKey.trim().isNotEmpty
-                              ? _selectedGroupKey.trim()
-                              : (_groups.isNotEmpty
-                                    ? _groups.first['key']?.trim() ?? ''
-                                    : '');
-                          final amount = int.tryParse(_amountDigitsOnly()) ?? 0;
-                          if (amount <= 0 || effectiveGroupKey.isEmpty) {
-                            return;
-                          }
-                          Navigator.of(context).pop(<String, dynamic>{
-                            'groupKey': effectiveGroupKey,
-                            'amount': amount,
-                            'monthKey': period.monthKey,
-                            'isRepeat': _isRepeat,
-                          });
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2DBC4D),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                        ),
-                        child: Text(
-                          widget.buttonLabel,
-                          style: GoogleFonts.manrope(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-      ),
-    );
-  }
-}
-
-class _MiniMetric extends StatelessWidget {
-  const _MiniMetric({required this.value, required this.label});
-
-  final String value;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          value,
-          style: GoogleFonts.manrope(
-            color: Colors.white,
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: GoogleFonts.manrope(
-            color: Colors.white.withValues(alpha: 0.45),
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _HalfArcPainter extends CustomPainter {
-  _HalfArcPainter({
-    required this.progress,
-    required this.color,
-    required this.backgroundColor,
-  });
-
-  final double progress;
-  final Color color;
-  final Color backgroundColor;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paintBackground = Paint()
-      ..color = backgroundColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 10
-      ..strokeCap = StrokeCap.round;
-
-    final paintProgress = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 10
-      ..strokeCap = StrokeCap.round;
-
-    final rect = Rect.fromLTWH(18, 10, size.width - 36, size.height * 2 - 24);
-    canvas.drawArc(rect, pi, pi, false, paintBackground);
-    canvas.drawArc(rect, pi, pi * progress, false, paintProgress);
-  }
-
-  @override
-  bool shouldRepaint(covariant _HalfArcPainter oldDelegate) {
-    return oldDelegate.progress != progress ||
-        oldDelegate.color != color ||
-        oldDelegate.backgroundColor != backgroundColor;
-  }
-}
-
-class _KindChoiceButton extends StatelessWidget {
-  const _KindChoiceButton({
-    required this.label,
-    required this.selected,
-    required this.color,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final Color color;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected ? color.withValues(alpha: 0.18) : const Color(0xFF1C1C1E),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: selected
-                  ? color.withValues(alpha: 0.55)
-                  : Colors.white.withValues(alpha: 0.08),
-            ),
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: GoogleFonts.manrope(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // --- Budget detail view for a single category
-class BudgetDetailScreen extends StatefulWidget {
-  final String categoryKey;
-  const BudgetDetailScreen({super.key, required this.categoryKey});
 
-  @override
-  State<BudgetDetailScreen> createState() => _BudgetDetailScreenState();
-}
 
-class _BudgetDetailScreenState extends State<BudgetDetailScreen> {
-  final BudgetStorageService _storage = BudgetStorageService();
-  final AuthSessionService _sessionService = AuthSessionService();
-  final FinanceApiService _financeApiService = FinanceApiService();
-  bool _loading = true;
-  Map<String, dynamic>? _item;
-  String _monthKey = '';
-  bool _didChange = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
-  Future<void> _load() async {
-    final items = await _storage.readBudgetItems();
-    Map<String, dynamic>? found;
-    for (final it in items) {
-      final ik =
-          (it['iconKey'] ?? it['categoryKey'] ?? it['key'])?.toString() ?? '';
-      if (ik == widget.categoryKey) {
-        found = Map<String, dynamic>.from(it);
-        break;
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _item = found;
-      _monthKey = found?['monthKey']?.toString() ?? _currentMonthKey();
-      _loading = false;
-    });
-  }
 
-  String _formatVnd(int value) =>
-      NumberFormat.decimalPattern('vi_VN').format(value);
 
-  String _currentMonthKey() {
-    final now = DateTime.now();
-    return '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
-  }
 
-  String _monthRangeFromKey(String monthKey) {
-    final parts = monthKey.split('-');
-    if (parts.length != 2) return monthKey;
-    final year = int.tryParse(parts[0]) ?? DateTime.now().year;
-    final month = int.tryParse(parts[1]) ?? DateTime.now().month;
-    final start = DateTime(year, month, 1);
-    final end = DateTime(year, month + 1, 0);
-    return '${start.day.toString().padLeft(2, '0')}/${start.month.toString().padLeft(2, '0')} - ${end.day.toString().padLeft(2, '0')}/${end.month.toString().padLeft(2, '0')}';
-  }
-
-  DateTimeRange _rangeFromMonthKey(String monthKey) {
-    final parts = monthKey.split('-');
-    final year =
-        int.tryParse(parts.length == 2 ? parts[0] : '') ?? DateTime.now().year;
-    final month =
-        int.tryParse(parts.length == 2 ? parts[1] : '') ?? DateTime.now().month;
-    final start = DateTime(year, month, 1);
-    final end = DateTime(year, month + 1, 0);
-    return DateTimeRange(start: start, end: end);
-  }
-
-  Future<void> _saveEditedItem({
-    required String name,
-    required int limitAmount,
-    required DateTimeRange period,
-  }) async {
-    final nextMonthKey =
-        '${period.start.year.toString().padLeft(4, '0')}-${period.start.month.toString().padLeft(2, '0')}';
-    final token = await _sessionService.getToken();
-    final categoryKey = widget.categoryKey;
-    final iconKey = (_item?['iconKey']?.toString().trim().isNotEmpty == true)
-        ? _item!['iconKey'].toString()
-        : categoryKey;
-    final kind = _item?['kind']?.toString();
-    final color = _item?['color']?.toString();
-    final categoryId = int.tryParse(_item?['categoryId']?.toString() ?? '');
-    final isRepeat = _item?['isRepeat'] == true;
-
-    if (token != null && token.trim().isNotEmpty) {
-      await _financeApiService.upsertCategory(
-        token: token,
-        name: name,
-        kind: kind,
-        iconKey: iconKey,
-        color: color,
-      );
-      await _financeApiService.upsertBudget(
-        token: token,
-        name: name,
-        limitAmount: limitAmount,
-        monthKey: nextMonthKey,
-        categoryId: categoryId,
-        slug: categoryKey,
-        kind: kind,
-        iconKey: iconKey,
-        color: color,
-        isRepeat: isRepeat,
-      );
-    }
-
-    final items = await _storage.readBudgetItems();
-    final updatedItems = items.map((item) {
-      final ik =
-          (item['iconKey'] ?? item['categoryKey'] ?? item['key'])?.toString() ??
-          '';
-      if (ik != categoryKey) return item;
-      final next = Map<String, dynamic>.from(item);
-      next['name'] = name;
-      next['limit'] = limitAmount;
-      next['monthKey'] = nextMonthKey;
-      next['updatedAt'] = DateTime.now().millisecondsSinceEpoch.toString();
-      return next;
-    }).toList();
-    await _storage.saveBudgetItems(updatedItems);
-
-    final groups = await _storage.readBudgetGroups();
-    final updatedGroups = groups.map((group) {
-      if ((group['key'] ?? '').trim().toLowerCase() !=
-          categoryKey.trim().toLowerCase()) {
-        return group;
-      }
-      return {...group, 'label': name};
-    }).toList();
-    await _storage.saveBudgetGroups(updatedGroups);
-    // Notify listeners so other screens (Budget list, Home) refresh
-    try {
-      calendarRefreshNotifier.value++;
-    } catch (_) {}
-
-    if (!mounted) return;
-    setState(() {
-      _item = {
-        ...?_item,
-        'name': name,
-        'limit': limitAmount,
-        'monthKey': nextMonthKey,
-        'updatedAt': DateTime.now().millisecondsSinceEpoch.toString(),
-      };
-      _monthKey = nextMonthKey;
-      _didChange = true;
-    });
-  }
-
-  Future<void> _showEditDialog() async {
-    final currentName = _item?['name']?.toString() ?? widget.categoryKey;
-    final currentLimit = int.tryParse(_item?['limit']?.toString() ?? '0') ?? 0;
-    var selectedPeriod = _rangeFromMonthKey(
-      _monthKey.isNotEmpty ? _monthKey : _currentMonthKey(),
-    );
-    final nameController = TextEditingController(text: currentName);
-    final amountController = TextEditingController(
-      text: NumberFormat.decimalPattern('vi_VN').format(currentLimit),
-    );
-    var isSaving = false;
-    var isFormattingAmount = false;
-
-    void formatAmountField() {
-      if (isFormattingAmount) return;
-      final digits = amountController.text.replaceAll(RegExp(r'[^0-9]'), '');
-      final limitedDigits = digits.length > 12
-          ? digits.substring(0, 12)
-          : digits;
-      final formatted = limitedDigits.isEmpty
-          ? ''
-          : NumberFormat.decimalPattern(
-              'vi_VN',
-            ).format(int.parse(limitedDigits));
-      if (formatted == amountController.text) return;
-
-      isFormattingAmount = true;
-      amountController.value = TextEditingValue(
-        text: formatted,
-        selection: TextSelection.collapsed(offset: formatted.length),
-      );
-      isFormattingAmount = false;
-    }
-
-    amountController.addListener(formatAmountField);
-
-    try {
-      if (!mounted) return;
-      final result = await showModalBottomSheet<Map<String, dynamic>>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: const Color(0xFF141414),
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        builder: (dialogContext) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              return SafeArea(
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    left: 18,
-                    right: 18,
-                    top: 18,
-                    bottom: MediaQuery.of(context).viewInsets.bottom + 18,
-                  ),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Center(
-                          child: Container(
-                            width: 44,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.18),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Sửa ngân sách',
-                          style: GoogleFonts.manrope(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        TextField(
-                          controller: nameController,
-                          style: GoogleFonts.manrope(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          decoration: InputDecoration(
-                            labelText: 'Tên hạng mục',
-                            labelStyle: GoogleFonts.manrope(
-                              color: Colors.white.withValues(alpha: 0.5),
-                            ),
-                            filled: true,
-                            fillColor: const Color(0xFF1C1C1E),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        TextField(
-                          controller: amountController,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                            LengthLimitingTextInputFormatter(12),
-                          ],
-                          style: GoogleFonts.manrope(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          decoration: InputDecoration(
-                            labelText: 'Số tiền',
-                            labelStyle: GoogleFonts.manrope(
-                              color: Colors.white.withValues(alpha: 0.5),
-                            ),
-                            filled: true,
-                            fillColor: const Color(0xFF1C1C1E),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        InkWell(
-                          borderRadius: BorderRadius.circular(16),
-                          onTap: () async {
-                            final picked = await showDateRangePicker(
-                              context: dialogContext,
-                              firstDate: DateTime(
-                                DateTime.now().year - 3,
-                                1,
-                                1,
-                              ),
-                              lastDate: DateTime(
-                                DateTime.now().year + 3,
-                                12,
-                                31,
-                              ),
-                              initialDateRange: selectedPeriod,
-                              helpText: 'Chọn thời gian',
-                              saveText: 'Chọn',
-                              cancelText: 'Huỷ',
-                            );
-                            if (picked == null) return;
-                            setDialogState(() {
-                              selectedPeriod = picked;
-                            });
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1C1C1E),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.calendar_month_outlined,
-                                  color: Colors.white70,
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Thời gian',
-                                        style: GoogleFonts.manrope(
-                                          color: Colors.white.withValues(
-                                            alpha: 0.55,
-                                          ),
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '${selectedPeriod.start.day.toString().padLeft(2, '0')}/${selectedPeriod.start.month.toString().padLeft(2, '0')} - ${selectedPeriod.end.day.toString().padLeft(2, '0')}/${selectedPeriod.end.month.toString().padLeft(2, '0')}',
-                                        style: GoogleFonts.manrope(
-                                          color: Colors.white,
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const Icon(
-                                  Icons.chevron_right_rounded,
-                                  color: Colors.white54,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        SizedBox(
-                          height: 52,
-                          child: ElevatedButton(
-                            onPressed: isSaving
-                                ? null
-                                : () {
-                                    final name = nameController.text.trim();
-                                    final amount =
-                                        int.tryParse(
-                                          amountController.text.replaceAll(
-                                            RegExp(r'[^0-9]'),
-                                            '',
-                                          ),
-                                        ) ??
-                                        0;
-                                    if (name.isEmpty || amount <= 0) {
-                                      return;
-                                    }
-                                    setDialogState(() {
-                                      isSaving = true;
-                                    });
-                                    Navigator.of(
-                                      dialogContext,
-                                    ).pop(<String, dynamic>{
-                                      'name': name,
-                                      'amount': amount,
-                                      'period': selectedPeriod,
-                                    });
-                                  },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF2DBC4D),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                            ),
-                            child: Text(
-                              isSaving ? 'Đang lưu...' : 'Lưu thay đổi',
-                              style: GoogleFonts.manrope(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      );
-      if (result == null) return;
-      final name = result['name']?.toString() ?? '';
-      final amount = result['amount'] is int
-          ? result['amount'] as int
-          : int.tryParse(result['amount']?.toString() ?? '') ?? 0;
-      final period = result['period'] is DateTimeRange
-          ? result['period'] as DateTimeRange
-          : _rangeFromMonthKey(_currentMonthKey());
-      if (name.isEmpty || amount <= 0) return;
-      await _saveEditedItem(name: name, limitAmount: amount, period: period);
-    } finally {
-      amountController.removeListener(formatAmountField);
-      nameController.dispose();
-      amountController.dispose();
-    }
-  }
-
-  Future<void> _deleteItem() async {
-    final token = await _sessionService.getToken();
-    final budgetId = int.tryParse(_item?['id']?.toString() ?? '');
-
-    if (token != null &&
-        token.trim().isNotEmpty &&
-        budgetId != null &&
-        budgetId > 0) {
-      await _financeApiService.deleteBudget(token: token, budgetId: budgetId);
-    }
-
-    final items = await _storage.readBudgetItems();
-    final next = items.where((it) {
-      final id = it['id']?.toString() ?? '';
-      if (budgetId != null && budgetId > 0) {
-        return id != budgetId.toString();
-      }
-      final ik =
-          (it['iconKey'] ?? it['categoryKey'] ?? it['key'])?.toString() ?? '';
-      return ik != widget.categoryKey;
-    }).toList();
-    await _storage.saveBudgetItems(next);
-    if (!mounted) return;
-    _didChange = true;
-    Navigator.of(context).pop(true);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final name = _item?['name']?.toString() ?? widget.categoryKey;
-    final limit = _item != null
-        ? (int.tryParse(_item!['limit']?.toString() ?? '0') ?? 0)
-        : 0;
-    final spent = _item != null
-        ? (int.tryParse(_item!['spent']?.toString() ?? '0') ?? 0)
-        : 0;
-    final remaining = (limit - spent).clamp(0, limit);
-    final progress = limit <= 0 ? 0.0 : (spent / limit).clamp(0.0, 1.0);
-
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
-        Navigator.of(context).pop(_didChange);
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(
-          backgroundColor: Colors.black,
-          elevation: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded),
-            onPressed: () => Navigator.of(context).pop(_didChange),
-          ),
-          title: Text(
-            name,
-            style: GoogleFonts.manrope(fontWeight: FontWeight.w800),
-          ),
-          actions: [
-            TextButton.icon(
-              onPressed: _showEditDialog,
-              icon: const Icon(
-                Icons.edit_outlined,
-                color: Colors.white,
-                size: 18,
-              ),
-              label: Text(
-                'Sửa',
-                style: GoogleFonts.manrope(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ],
-        ),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : Padding(
-                padding: const EdgeInsets.all(18.0),
-                child: Column(
-                  children: [
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1A1A1C),
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 44,
-                                height: 44,
-                                decoration: BoxDecoration(
-                                  color: Colors.white12,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    name.isNotEmpty ? name[0] : '?',
-                                    style: const TextStyle(color: Colors.white),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Text(
-                                name,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            _formatVnd(limit),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 28,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Đã chi',
-                                    style: TextStyle(
-                                      color: Colors.white.withValues(
-                                        alpha: 0.6,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatVnd(spent),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    'Còn lại',
-                                    style: TextStyle(
-                                      color: Colors.white.withValues(
-                                        alpha: 0.6,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatVnd(remaining),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: LinearProgressIndicator(
-                              value: progress,
-                              minHeight: 10,
-                              backgroundColor: Colors.white10,
-                              valueColor: AlwaysStoppedAnimation(Colors.white),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.calendar_today,
-                                color: Colors.white54,
-                                size: 18,
-                              ),
-                              const SizedBox(width: 8),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _monthRangeFromKey(
-                                      _monthKey.isNotEmpty
-                                          ? _monthKey
-                                          : _currentMonthKey(),
-                                    ),
-                                    style: TextStyle(
-                                      color: Colors.white.withValues(
-                                        alpha: 0.85,
-                                      ),
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Hôm nay là ngày cuối cùng',
-                                    style: TextStyle(color: Colors.white54),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () {},
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF1A1A1C),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          elevation: 0,
-                        ),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 14),
-                          child: Text(
-                            'Danh sách giao dịch',
-                            style: TextStyle(
-                              color: Color(0xFF2ECC71),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton(
-                        onPressed: () async {
-                          final ok = await showDialog<bool>(
-                            context: context,
-                            builder: (dctx) => AlertDialog(
-                              title: const Text('Xác nhận'),
-                              content: const Text(
-                                'Bạn có chắc muốn xóa hạng mục này?',
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () =>
-                                      Navigator.of(dctx).pop(false),
-                                  child: const Text('Huỷ'),
-                                ),
-                                FilledButton(
-                                  onPressed: () => Navigator.of(dctx).pop(true),
-                                  child: const Text('Xóa'),
-                                ),
-                              ],
-                            ),
-                          );
-                          if (ok == true) await _deleteItem();
-                        },
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(
-                            color: Colors.white.withValues(alpha: 0.08),
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                        ),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 14),
-                          child: Text(
-                            'Xóa',
-                            style: TextStyle(
-                              color: Color(0xFFFF4D4D),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-      ),
-    );
-  }
-}

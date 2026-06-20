@@ -82,7 +82,7 @@ class _RegisterState extends State<Register> {
       // 3. Hiển thị lỗi nếu gửi OTP thất bại
       _showRegisterResult(
         success: false, 
-        message: otpResult.message ?? 'Không thể gửi mã xác nhận. Vui lòng thử lại.',
+        message: otpResult.message,
       );
     }
   }
@@ -171,7 +171,9 @@ class _RegisterState extends State<Register> {
                                 setSheetState(() => isVerifying = false);
 
                                 if (result.success) {
-                                  Navigator.pop(sheetContext); // Đóng BottomSheet
+                                  if (sheetContext.mounted) {
+                                    Navigator.pop(sheetContext); // Đóng BottomSheet
+                                  }
                                   
                                   // Xử lý lưu session
                                   final token = (result.data?['token'] as String?)?.trim() ?? '';
@@ -200,10 +202,10 @@ class _RegisterState extends State<Register> {
                                   }
                                 } else {
                                   // Hiển thị lỗi OTP sai
-                                  if (mounted) {
+                                  if (context.mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                        content: Text(result.message ?? 'Mã OTP không chính xác.'),
+                                        content: Text(result.message),
                                         backgroundColor: const Color(0xFFFF3B3B),
                                       ),
                                     );

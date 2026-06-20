@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,9 +9,11 @@ import 'package:flutter_application_1/services/auth_session_service.dart';
 import 'package:flutter_application_1/services/calendar_api_service.dart';
 import 'package:flutter_application_1/services/calendar_refresh_notifier.dart';
 import 'package:flutter_application_1/services/calendar_storage_service.dart';
+import 'package:flutter_application_1/services/budget_storage_service.dart';
 
 class CalendarScreen extends StatefulWidget {
-  const CalendarScreen({super.key});
+  const CalendarScreen({super.key, this.onBack});
+  final VoidCallback? onBack;
 
   @override
   State<CalendarScreen> createState() => _CalendarScreenState();
@@ -52,7 +53,9 @@ class _CircleActionButton extends StatelessWidget {
   }
 }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+class _CalendarScreenState extends State<CalendarScreen> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
   DateTime _visibleMonth = DateTime.now();
   Map<int, List<Map<String, dynamic>>> _postsByDay = {};
   int _monthIncome = 0;
@@ -60,6 +63,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
   final CalendarStorageService _storageService = CalendarStorageService();
   final AuthSessionService _sessionService = AuthSessionService();
   final CalendarApiService _apiService = CalendarApiService();
+  final BudgetStorageService _budgetStorageService = BudgetStorageService();
+  Map<String, String> _categoryIcons = {};
+  Map<String, String> _categoryLabels = {};
   late final VoidCallback _refreshListener;
 
   @override
@@ -129,6 +135,27 @@ Future<void> _loadMonthData() async {
   List<Map<String, dynamic>> visiblePosts = localPosts;
 
   try {
+    final localGroups = await _budgetStorageService.readBudgetGroups();
+    final newIcons = <String, String>{};
+    final newLabels = <String, String>{};
+    for (final g in localGroups) {
+      final k = (g['key'] ?? '').toString().trim();
+      final icon = g['iconKey']?.toString().trim() ?? '';
+      final label = g['label']?.toString().trim() ?? '';
+      if (k.isNotEmpty) {
+        if (icon.isNotEmpty) newIcons[k] = icon;
+        if (label.isNotEmpty) newLabels[k] = label;
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _categoryIcons = newIcons;
+        _categoryLabels = newLabels;
+      });
+    }
+  } catch (_) {}
+
+  try {
     final token = await _sessionService.getToken();
     if (token != null && token.trim().isNotEmpty) {
       final remote = await _apiService.getMonth(
@@ -150,16 +177,19 @@ Future<void> _loadMonthData() async {
                 final m = Map<String, dynamic>.from(e);
               final remotePost = <String, dynamic>{
                   'id': m['id']?.toString(),
+                  'clientLocalId': m['clientLocalId']?.toString() ?? m['client_local_id']?.toString(),
                   'imageUrl': m['imageUrl'] ?? m['image_url'],
-                  // keep imagePath null for remote records so local file checks don't misinterpret URLs
                   'imagePath': m['imagePath'] ?? m['image_path'],
-                  // keep both entryTs and dateKey; prefer dateKey when grouping
                   'date': m['date'] ?? m['entryTs'],
                   'dateKey': m['dateKey'] ?? m['date_key'],
                   'amount': m['amount'] ?? 0,
                   'isExpense': m['isExpense'] ?? m['is_expense'] ?? false,
                   'note': m['note'],
                   'entryTs': m['entryTs'] ?? m['entry_ts'],
+                  'categoryId': m['categoryId']?.toString() ?? m['category_id']?.toString(),
+                  'categoryKey': m['categoryKey']?.toString() ?? m['category_key']?.toString(),
+                  'categoryLabel': m['categoryLabel']?.toString() ?? m['category_label']?.toString() ?? m['categoryName']?.toString(),
+                  'slug': m['slug']?.toString(),
                 };
 
                 // Attempt to find a matching local post using several heuristics so
@@ -203,10 +233,31 @@ Future<void> _loadMonthData() async {
                   remotePost,
                 );
                 final normalizedMerged = _normalizeCalendarPost(merged);
+                
+                // Remove the old local ghost post so it doesn't duplicate
+                if (matchedLocal != null) {
+                  mergedByKey.remove(_postMergeKey(matchedLocal));
+                }
+                
                 remotePosts.add(normalizedMerged);
                 mergedByKey[_postMergeKey(normalizedMerged)] = normalizedMerged;
               }
           }
+
+          final serverIds = <String>{};
+          for (final e in entries) {
+            if (e is Map && e['id'] != null) {
+              serverIds.add(e['id'].toString());
+            }
+          }
+          
+          mergedByKey.removeWhere((key, post) {
+            final id = post['id']?.toString().trim() ?? '';
+            if (id.isNotEmpty && !serverIds.contains(id)) {
+              return true;
+            }
+            return false;
+          });
 
           final mergedPosts = mergedByKey.values
               .map(_normalizeCalendarPost)
@@ -310,6 +361,15 @@ Future<void> _loadMonthData() async {
     final localEntryTs = local['entryTs']?.toString().trim();
     if (localEntryTs != null && localEntryTs.isNotEmpty) {
       merged['entryTs'] = localEntryTs;
+    }
+
+    // Giữ categoryLabel từ local nếu server không trả về (server thường chỉ trả categoryKey)
+    final remoteCatLabel = remote['categoryLabel']?.toString().trim();
+    final localCatLabel = local['categoryLabel']?.toString().trim();
+    if ((remoteCatLabel == null || remoteCatLabel.isEmpty) &&
+        localCatLabel != null &&
+        localCatLabel.isNotEmpty) {
+      merged['categoryLabel'] = localCatLabel;
     }
 
     return merged;
@@ -467,8 +527,11 @@ Future<void> _loadMonthData() async {
 
   String _formatViewerTime(Map<String, dynamic> post) {
     final raw = post['localDateTime']?.toString() ?? post['entryTs']?.toString() ?? post['date']?.toString() ?? '';
+    
+    // Server lưu UTC. Không cắt 'Z', để tryParse nhận diện đúng UTC và toLocal() sẽ tự động chuyển về giờ chuẩn của điện thoại.
     final parsed = DateTime.tryParse(raw);
     if (parsed == null) return '';
+    
     final local = parsed.toLocal();
     final hour = local.hour.toString().padLeft(2, '0');
     final minute = local.minute.toString().padLeft(2, '0');
@@ -516,7 +579,7 @@ Future<void> _loadMonthData() async {
           builder: (context, setState) {
             final headerDate = _selectedDayDate(dayIndex);
             return Material(
-              color: const Color(0xFF2A241F),
+              color: Colors.black,
               child: SafeArea(
                 child: Stack(
                   children: [
@@ -527,9 +590,9 @@ Future<void> _loadMonthData() async {
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
                             colors: [
-                              Color(0xFF332C28),
-                              Color(0xFF1D1714),
-                              Color(0xFF120F0D),
+                              Colors.black,
+                              Colors.black,
+                              Colors.black,
                             ],
                           ),
                         ),
@@ -567,10 +630,7 @@ Future<void> _loadMonthData() async {
                                   ),
                                 ],
                               ),
-                              _CircleActionButton(
-                                icon: Icons.ios_share_rounded,
-                                onTap: () {},
-                              ),
+                              const SizedBox(width: 48), // Spacer to balance the close button on the left
                             ],
                           ),
                         ),
@@ -650,8 +710,8 @@ Future<void> _loadMonthData() async {
                                                   child: AspectRatio(
                                                     aspectRatio: 0.86,
                                                     child: Stack(
-                                                      fit: StackFit.expand,
-                                                      children: [
+                                                    fit: StackFit.expand,
+                                                    children: [
                                                         if (provider != null)
                                                           Image(
                                                             image: provider,
@@ -750,9 +810,51 @@ Future<void> _loadMonthData() async {
                                             fontWeight: FontWeight.w600,
                                           ),
                                         ),
-                                        const SizedBox(height: 216),
-                                        // Thumbnail strip removed per request.
-                                        const SizedBox(height: 10),
+                                        const SizedBox(height: 12),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(20),
+                                          ),
+                                          child: Builder(
+                                            builder: (ctx) {
+                                              final catKey = post['categoryKey']?.toString() ?? '';
+                                              final iconStr = _categoryIcons[catKey] ?? post['iconKey']?.toString() ?? '';
+                                              final labelText = post['categoryLabel']?.toString() ?? post['categoryName']?.toString() ?? _categoryLabels[catKey] ?? post['categoryKey']?.toString() ?? post['slug']?.toString() ?? 'Chưa phân loại';
+                                              
+                                              if (iconStr.isNotEmpty) {
+                                                return Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      iconStr,
+                                                      style: const TextStyle(fontSize: 14, height: 1),
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    Text(
+                                                      labelText,
+                                                      style: GoogleFonts.manrope(
+                                                        color: Colors.black,
+                                                        fontSize: 14,
+                                                        fontWeight: FontWeight.w700,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                );
+                                              }
+                                              
+                                              return Text(
+                                                labelText,
+                                                style: GoogleFonts.manrope(
+                                                  color: Colors.black,
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -761,6 +863,26 @@ Future<void> _loadMonthData() async {
                             ),
                           ),
                         ),
+                        if (posts.length > 1)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 16, bottom: 32),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: List.generate(posts.length, (idx) {
+                                final isActive = selectedIndex == idx;
+                                return AnimatedContainer(
+                                  duration: const Duration(milliseconds: 300),
+                                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                                  width: isActive ? 24 : 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: isActive ? const Color(0xFF8344FF) : Colors.white.withValues(alpha: 0.3),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                );
+                              }),
+                            ),
+                          ),
                       ],
                     ),
                   ],
@@ -802,20 +924,28 @@ Future<void> _loadMonthData() async {
 
   int _firstWeekday(DateTime m) => DateTime(m.year, m.month, 1).weekday; // 1 = Mon
 
- @override
-Widget build(BuildContext context) {
-  final monthLabel = 'Tháng ${_visibleMonth.month} ${_visibleMonth.year}';
-  final daysCount = _daysInMonth(_visibleMonth);
-  final firstWeekday = _firstWeekday(_visibleMonth);
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final monthLabel = 'Tháng ${_visibleMonth.month} ${_visibleMonth.year}';
+    final daysCount = _daysInMonth(_visibleMonth);
+    final firstWeekday = _firstWeekday(_visibleMonth);
 
-  return Scaffold(
-    backgroundColor: const Color(0xFF080808),
-    appBar: AppBar(
+    return Scaffold(
+      backgroundColor: const Color(0xFF080808),
+      appBar: AppBar(
       backgroundColor: Colors.transparent,
       elevation: 0,
       centerTitle: true,
-        title: Text('Lịch', style: GoogleFonts.manrope(fontSize: 18, fontWeight: FontWeight.w700)),
-        automaticallyImplyLeading: true,
+      title: Text('Lịch', style: GoogleFonts.manrope(fontSize: 18, fontWeight: FontWeight.w700)),
+      automaticallyImplyLeading: false,
+      actions: [
+        if (widget.onBack != null)
+          IconButton(
+            icon: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white),
+            onPressed: widget.onBack,
+          ),
+      ],
     ),
     body: SafeArea(
       child: Padding(

@@ -315,7 +315,7 @@ class AuthApiService {
               headers: const {'Content-Type': 'application/json'},
               body: jsonEncode(body),
             )
-            .timeout(const Duration(seconds: 4)),
+            .timeout(const Duration(seconds: 30)),
       );
 
       final decoded = _decodeJson(response.body);

@@ -99,6 +99,19 @@ async function getBudgets(req, res) {
   }
 }
 
+async function getHistoryBudgets(req, res) {
+  try {
+    const userId = getUserId(req, res);
+    if (!userId) return;
+
+    const data = await financeModel.listHistoryBudgets(userId);
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('[finance] getHistoryBudgets error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+}
+
 async function postBudget(req, res) {
   try {
     const userId = getUserId(req, res);
@@ -254,6 +267,7 @@ module.exports = {
   deleteCategory,
   deleteTransaction,
   getBudgets,
+  getHistoryBudgets,
   getCategories,
   getSummary,
   getTransactions,

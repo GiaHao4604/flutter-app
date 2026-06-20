@@ -111,6 +111,7 @@ async function testConnection() {
       CREATE TABLE IF NOT EXISTS posts (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         user_id INT UNSIGNED DEFAULT NULL,
+        calendar_entry_id BIGINT UNSIGNED DEFAULT NULL,
         image_url VARCHAR(255) NOT NULL,
         caption TEXT,
         device_id VARCHAR(100),
@@ -120,14 +121,44 @@ async function testConnection() {
         KEY idx_posts_user_created (user_id, created_at),
         CONSTRAINT fk_posts_user
           FOREIGN KEY (user_id) REFERENCES users(id)
+          ON DELETE CASCADE,
+        CONSTRAINT fk_posts_calendar_entry
+          FOREIGN KEY (calendar_entry_id) REFERENCES calendar_entries(id)
           ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
     await ensureColumn('posts', 'user_id', 'INT UNSIGNED DEFAULT NULL');
+    await ensureColumn('posts', 'calendar_entry_id', 'BIGINT UNSIGNED DEFAULT NULL');
     await ensureColumn('posts', 'caption', 'TEXT');
     await ensureColumn('posts', 'device_id', 'VARCHAR(100) DEFAULT NULL');
     await ensureColumn('posts', 'camera_type', "ENUM('front','back') DEFAULT NULL");
+
+    // Ensure foreign key constraint
+    try {
+      const [fkRows] = await pool.query(`
+        SELECT CONSTRAINT_NAME 
+        FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS 
+        WHERE CONSTRAINT_SCHEMA = ? 
+          AND TABLE_NAME = 'posts' 
+          AND CONSTRAINT_NAME = 'fk_posts_calendar_entry'
+      `, [dbName]);
+      
+      if (!fkRows || fkRows.length === 0) {
+        console.log("[db] Adding foreign key fk_posts_calendar_entry to posts table...");
+        await pool.query(`
+          ALTER TABLE posts
+          ADD CONSTRAINT fk_posts_calendar_entry
+          FOREIGN KEY (calendar_entry_id) REFERENCES calendar_entries(id)
+          ON DELETE CASCADE
+        `);
+        console.log("[db] Added foreign key fk_posts_calendar_entry successfully");
+      }
+    } catch (e) {
+      if (String(e && e.code) !== 'ER_DUP_CONSTRAINT' && String(e && e.code) !== 'ER_FK_DUP_NAME') {
+        console.error("[db] Error ensuring fk_posts_calendar_entry:", e);
+      }
+    }
 
     try {
       await pool.query('CREATE INDEX idx_posts_user_created ON posts (user_id, created_at)');
@@ -136,6 +167,20 @@ async function testConnection() {
         console.error('[db] Error ensuring idx_posts_user_created:', e);
       }
     }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS post_reactions (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        post_id INT NOT NULL,
+        user_id INT UNSIGNED NOT NULL,
+        reaction_icon VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uq_post_user_reaction (post_id, user_id),
+        CONSTRAINT fk_post_reactions_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        CONSTRAINT fk_post_reactions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversations (
@@ -175,6 +220,29 @@ async function testConnection() {
         CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    // Thêm cột shared_post_id vào messages nếu chưa có
+    await ensureColumn('messages', 'shared_post_id', 'INT UNSIGNED DEFAULT NULL');
+    // Thêm foreign key nếu chưa có
+    try {
+      const [fkSharedPost] = await pool.query(`
+        SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+        WHERE CONSTRAINT_SCHEMA = ? AND TABLE_NAME = 'messages' AND CONSTRAINT_NAME = 'fk_messages_shared_post'
+      `, [dbName]);
+      if (!fkSharedPost || fkSharedPost.length === 0) {
+        await pool.query(`
+          ALTER TABLE messages
+          ADD CONSTRAINT fk_messages_shared_post
+          FOREIGN KEY (shared_post_id) REFERENCES posts(id) ON DELETE SET NULL
+        `);
+        console.log('[db] Added fk_messages_shared_post');
+      }
+    } catch (e) {
+      if (String(e && e.code) !== 'ER_DUP_CONSTRAINT' && String(e && e.code) !== 'ER_FK_DUP_NAME') {
+        console.error('[db] Error ensuring fk_messages_shared_post:', e);
+      }
+    }
+
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS budgets (
@@ -233,6 +301,8 @@ async function testConnection() {
     await ensureColumn('transactions', 'transaction_date', 'DATE NULL');
     await ensureColumn('transactions', 'note', 'VARCHAR(255) DEFAULT NULL');
     await ensureColumn('transactions', 'calendar_entry_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    await ensureColumn('budgets', 'start_date', 'DATE NULL');
+    await ensureColumn('budgets', 'end_date', 'DATE NULL');
 
     try {
       await pool.query(
@@ -307,6 +377,21 @@ async function testConnection() {
           DROP COLUMN is_expense
       `);
     }
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        user_id INT UNSIGNED NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        body TEXT NOT NULL,
+        is_read TINYINT(1) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_notifications_user (user_id),
+        CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    await ensureColumn('notifications', 'post_snapshot', 'JSON DEFAULT NULL');
 
     const [categoryCountRows] = await pool.query('SELECT COUNT(*) AS total FROM categories');
     const categoryCount = Number(categoryCountRows?.[0]?.total || 0);
